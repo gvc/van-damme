@@ -49,13 +49,20 @@ pub fn session_exists(name: &str) -> Result<bool> {
 /// Create a new tmux session with Claude and editor windows.
 /// If `prompt` is provided, it will be sent to Claude as an initial prompt.
 pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<TmuxSession> {
+    // The worktree lives at <dir>/.claude/worktrees/<name>
+    let worktree_dir = format!("{dir}/.claude/worktrees/{name}");
+
+    // Ensure the worktree directory exists before claude starts
+    std::fs::create_dir_all(&worktree_dir).ok();
+
     // Build the claude command, optionally with an initial prompt
+    // Start in the worktree dir so Claude Code's shell pwd matches the worktree
     let claude_cmd = match prompt {
         Some(p) => format!("claude --worktree {name} {}", shell_escape(p)),
         None => format!("claude --worktree {name}"),
     };
 
-    // Create detached session with claude window
+    // Create detached session with claude window, starting in the worktree directory
     let status = Command::new("tmux")
         .args([
             "new-session",
@@ -65,20 +72,13 @@ pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<Tmu
             "-n",
             "claude",
             "-c",
-            dir,
+            &worktree_dir,
             &claude_cmd,
         ])
         .status()?;
     if !status.success() {
         return Err(eyre!("Failed to create tmux session '{name}'"));
     }
-
-    // The worktree lives at <dir>/.claude/worktrees/<name>
-    let worktree_dir = format!("{dir}/.claude/worktrees/{name}");
-
-    // Ensure the worktree directory exists before opening editor in it
-    // (claude --worktree creates it, but there may be a race)
-    std::fs::create_dir_all(&worktree_dir).ok();
 
     // Create editor window in the worktree directory
     run_tmux(&[
