@@ -2,6 +2,14 @@
 
 A terminal UI (TUI) application for managing Claude Code sessions inside tmux. It provides a streamlined workflow for spinning up isolated Claude coding environments — each with its own git worktree, editor window, and Claude instance — and switching between them from a single dashboard.
 
+## Screenshots
+
+### Session List
+![Session List](screenshots/session-list.svg)
+
+### New Task Form
+![New Task Form](screenshots/new-task.svg)
+
 ## What It Does
 
 Van Damme acts as a session manager for Claude Code. When you launch it, you see a list of your active sessions. From there you can:
