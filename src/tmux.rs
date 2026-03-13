@@ -48,7 +48,13 @@ pub fn session_exists(name: &str) -> Result<bool> {
 
 /// Create a new tmux session with Claude and editor windows.
 /// If `prompt` is provided, it will be sent to Claude as an initial prompt.
-pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<TmuxSession> {
+/// If `claude_args` is provided, they are inserted before the prompt on the CLI.
+pub fn create_session(
+    name: &str,
+    dir: &str,
+    prompt: Option<&str>,
+    claude_args: Option<&str>,
+) -> Result<TmuxSession> {
     // Canonicalize the base directory so tmux gets an absolute, resolved path
     let abs_dir = std::path::Path::new(dir)
         .canonicalize()
@@ -60,11 +66,16 @@ pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<Tmu
     // Don't create it manually — Claude Code's --worktree flag handles that via git worktree add
     let worktree_dir = format!("{abs_dir}/.claude/worktrees/{name}");
 
-    // Build the claude command, optionally with an initial prompt
-    let claude_cmd = match prompt {
-        Some(p) => format!("claude --worktree {name} {}", shell_escape(p)),
-        None => format!("claude --worktree {name}"),
-    };
+    // Build the claude command with optional extra args and prompt
+    let mut claude_cmd = format!("claude --worktree {name}");
+    if let Some(args) = claude_args {
+        claude_cmd.push(' ');
+        claude_cmd.push_str(args);
+    }
+    if let Some(p) = prompt {
+        claude_cmd.push(' ');
+        claude_cmd.push_str(&shell_escape(p));
+    }
 
     // Create detached session with claude window, starting in the project directory
     let status = Command::new("tmux")
@@ -105,15 +116,7 @@ pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<Tmu
     };
 
     // Create editor window
-    run_tmux(&[
-        "new-window",
-        "-t",
-        name,
-        "-n",
-        "editor",
-        "-c",
-        editor_dir,
-    ])?;
+    run_tmux(&["new-window", "-t", name, "-n", "editor", "-c", editor_dir])?;
 
     // Open vim in editor window
     run_tmux(&[
@@ -296,7 +299,7 @@ mod tests {
             .args(["kill-session", "-t", name])
             .status();
 
-        let result = create_session(name, dir, None);
+        let result = create_session(name, dir, None, None);
         assert!(result.is_ok());
 
         let session = result.unwrap();

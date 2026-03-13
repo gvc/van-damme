@@ -82,10 +82,14 @@ fn main() -> Result<()> {
                                     title,
                                     directory,
                                     prompt,
+                                    claude_args,
                                 } => {
-                                    if let Err(e) =
-                                        launch_session(&title, &directory, prompt.as_deref())
-                                    {
+                                    if let Err(e) = launch_session(
+                                        &title,
+                                        &directory,
+                                        prompt.as_deref(),
+                                        claude_args.as_deref(),
+                                    ) {
                                         app.error_message = Some(format!("{e}"));
                                     } else {
                                         session_list.refresh();
@@ -114,7 +118,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn launch_session(title: &str, directory: &str, prompt: Option<&str>) -> Result<()> {
+fn launch_session(
+    title: &str,
+    directory: &str,
+    prompt: Option<&str>,
+    claude_args: Option<&str>,
+) -> Result<()> {
     let session_name = tmux::sanitize_session_name(title);
 
     if session_name.is_empty() {
@@ -141,7 +150,7 @@ fn launch_session(title: &str, directory: &str, prompt: Option<&str>) -> Result<
         ));
     }
 
-    let tmux_session = tmux::create_session(&session_name, directory, prompt)?;
+    let tmux_session = tmux::create_session(&session_name, directory, prompt, claude_args)?;
 
     session::add_session(
         tmux_session.session_id,
