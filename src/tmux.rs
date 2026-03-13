@@ -137,7 +137,7 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
         "split-window",
         "-h",
         "-t",
-        &format!("{name}:claude"),
+        &format!("{session_name}:claude"),
         "-c",
         editor_dir,
     ])?;
@@ -146,11 +146,11 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
     run_tmux(&[
         "select-pane",
         "-t",
-        &format!("{name}:claude.0"),
+        &format!("{session_name}:claude.0"),
     ])?;
 
     // Create editor window with vim
-    run_tmux(&["new-window", "-t", name, "-n", "editor", "-c", editor_dir])?;
+    run_tmux(&["new-window", "-t", session_name, "-n", "editor", "-c", editor_dir])?;
 
     // Open vim in editor window
     run_tmux(&[
@@ -173,16 +173,6 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
 
     // Select the claude window as the default
     run_tmux(&["select-window", "-t", &format!("{session_name}:claude")])?;
-
-    // Capture session ID
-    let output = Command::new("tmux")
-        .args(["display-message", "-t", name, "-p", "#{session_id}"])
-        .output()?;
-    if !output.status.success() {
-        return Err(eyre!("Failed to get session ID for '{session_name}'"));
-    }
-
-    let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     Ok(())
 }
