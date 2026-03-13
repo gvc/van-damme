@@ -16,7 +16,6 @@ pub enum SessionListAction {
     None,
     Quit,
     NewTask,
-    Attach { session_name: String },
 }
 
 #[derive(Debug)]
@@ -79,7 +78,6 @@ impl SessionList {
                 self.kill_selected();
                 SessionListAction::None
             }
-            KeyCode::Enter => self.attach_selected(),
             _ => SessionListAction::None,
         }
     }
@@ -133,16 +131,6 @@ impl SessionList {
                     self.status_message = Some(format!("Failed to kill '{name}': {e}"));
                 }
             }
-        }
-    }
-
-    fn attach_selected(&self) -> SessionListAction {
-        if let Some(i) = self.list_state.selected() {
-            SessionListAction::Attach {
-                session_name: self.sessions[i].tmux_session_name.clone(),
-            }
-        } else {
-            SessionListAction::None
         }
     }
 
@@ -217,7 +205,7 @@ impl SessionList {
         }
 
         let hints = Paragraph::new(Line::from(Span::styled(
-            "j/k: navigate  |  Enter: attach  |  x: kill  |  n: new  |  q: quit",
+            "j/k: navigate  |  x: kill  |  n: new  |  q: quit",
             Style::default().fg(theme::GRAY_DIM),
         )));
         frame.render_widget(hints, chunks[1]);
@@ -333,26 +321,6 @@ mod tests {
         let mut list = SessionList::new(sample_sessions());
         let action = list.handle_key(key(KeyCode::Char('n')));
         assert_eq!(action, SessionListAction::NewTask);
-    }
-
-    #[test]
-    fn test_enter_attach() {
-        let mut list = SessionList::new(sample_sessions());
-        list.list_state.select(Some(1));
-        let action = list.handle_key(key(KeyCode::Enter));
-        assert_eq!(
-            action,
-            SessionListAction::Attach {
-                session_name: "task-two".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_enter_on_empty_is_none() {
-        let mut list = SessionList::new(vec![]);
-        let action = list.handle_key(key(KeyCode::Enter));
-        assert_eq!(action, SessionListAction::None);
     }
 
     #[test]
