@@ -73,7 +73,8 @@ fn main() -> Result<()> {
                                     running = false;
                                 }
                                 SessionListAction::NewTask => {
-                                    let recent = recent_dirs::recent_directories(5).unwrap_or_default();
+                                    let recent =
+                                        recent_dirs::recent_directories(5).unwrap_or_default();
                                     app = App::with_recent_dirs(recent);
                                     screen = Screen::NewTask;
                                 }
@@ -161,14 +162,35 @@ fn launch_session(
         ));
     }
 
-    let tmux_session = tmux::create_session(&session_name, directory, prompt, claude_args)?;
+    // Generate the claude session UUID and persist the record BEFORE creating the
+    // tmux session. Claude's SessionStart hook fires immediately on launch and needs
+    // the record to already exist in the DB to set up the editor window.
+    let claude_session_id = uuid::Uuid::new_v4().to_string();
 
     session::add_session(
-        tmux_session.session_id,
-        tmux_session.session_name.clone(),
-        tmux_session.claude_session_id,
+        String::new(), // placeholder — updated after tmux session is created
+        session_name.clone(),
+        claude_session_id.clone(),
         directory.to_string(),
     )?;
+
+    let tmux_session = match tmux::create_session(
+        &session_name,
+        directory,
+        prompt,
+        claude_args,
+        &claude_session_id,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            // Clean up the DB record if tmux session creation fails
+            let _ = session::remove_session(&session_name);
+            return Err(e);
+        }
+    };
+
+    // Update the record with the real tmux session ID
+    session::update_tmux_session_id(&session_name, &tmux_session.session_id)?;
 
     recent_dirs::record_directory(directory)?;
 

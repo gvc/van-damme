@@ -134,6 +134,28 @@ fn update_state_by_claude_session_at(
     Ok(())
 }
 
+/// Update the tmux session ID for a session looked up by tmux session name.
+pub fn update_tmux_session_id(tmux_session_name: &str, tmux_session_id: &str) -> Result<()> {
+    let path = default_db_path()?;
+    update_tmux_session_id_at(&path, tmux_session_name, tmux_session_id)
+}
+
+fn update_tmux_session_id_at(
+    path: &Path,
+    tmux_session_name: &str,
+    tmux_session_id: &str,
+) -> Result<()> {
+    let mut db = load_db_from(path)?;
+    let session = db
+        .sessions
+        .iter_mut()
+        .find(|s| s.tmux_session_name == tmux_session_name)
+        .ok_or_else(|| eyre!("No session with tmux_session_name '{}'", tmux_session_name))?;
+    session.tmux_session_id = tmux_session_id.to_string();
+    save_db_to(path, &db)?;
+    Ok(())
+}
+
 /// Add a new session record and persist to disk.
 pub fn add_session(
     tmux_session_id: String,
@@ -142,7 +164,13 @@ pub fn add_session(
     directory: String,
 ) -> Result<SessionRecord> {
     let path = default_db_path()?;
-    add_session_to(&path, tmux_session_id, tmux_session_name, claude_session_id, directory)
+    add_session_to(
+        &path,
+        tmux_session_id,
+        tmux_session_name,
+        claude_session_id,
+        directory,
+    )
 }
 
 fn add_session_to(
@@ -404,6 +432,35 @@ mod tests {
         assert_eq!(SessionState::Working.to_string(), "Working");
         assert_eq!(SessionState::WaitingUser.to_string(), "Waiting User");
         assert_eq!(SessionState::Idle.to_string(), "Idle");
+    }
+
+    #[test]
+    fn test_update_tmux_session_id() {
+        let (_tmp, path) = temp_db_path();
+        add_session_to(
+            &path,
+            "".to_string(),
+            "my-session".to_string(),
+            "uuid-1".to_string(),
+            "/tmp".to_string(),
+        )
+        .unwrap();
+
+        // Initially empty
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions[0].tmux_session_id, "");
+
+        // Update to real tmux session ID
+        update_tmux_session_id_at(&path, "my-session", "$42").unwrap();
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions[0].tmux_session_id, "$42");
+    }
+
+    #[test]
+    fn test_update_tmux_session_id_not_found() {
+        let (_tmp, path) = temp_db_path();
+        let result = update_tmux_session_id_at(&path, "nonexistent", "$1");
+        assert!(result.is_err());
     }
 
     #[test]
