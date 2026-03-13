@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Position},
-    style::Style,
+    layout::{Alignment, Constraint, Flex, Layout, Position},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
@@ -391,16 +391,27 @@ impl App {
         let max_prompt_height = area.height.saturating_sub(16); // leave room for other fields
         let prompt_box_height = (prompt_lines + 2).min(max_prompt_height).max(3);
 
-        // 2 (outer border) + 1+3+1+3+1 (labels+inputs) + prompt_box_height + 2 (hints)
-        let form_height = (13 + prompt_box_height).min(area.height.saturating_sub(2));
+        // 2 (outer border) + 1+3+1+3+1 (labels+inputs) + prompt_box_height + 1 (hints)
+        let form_height = (12 + prompt_box_height).min(area.height.saturating_sub(2));
+        // +1 for error line below the box
+        let total_height = form_height + 1;
 
-        let vertical = Layout::vertical([Constraint::Length(form_height)])
+        let vertical = Layout::vertical([Constraint::Length(total_height)])
             .flex(Flex::Center)
             .split(area);
         let horizontal = Layout::horizontal([Constraint::Length(form_width)])
             .flex(Flex::Center)
             .split(vertical[0]);
-        let form_area = horizontal[0];
+        let outer_area = horizontal[0];
+
+        // Split into form box and error line below
+        let outer_chunks = Layout::vertical([
+            Constraint::Length(form_height),
+            Constraint::Length(1),
+        ])
+        .split(outer_area);
+        let form_area = outer_chunks[0];
+        let error_area = outer_chunks[1];
 
         // Clear area behind form and fill with background
         frame.render_widget(Clear, form_area);
@@ -418,7 +429,7 @@ impl App {
         let inner = outer_block.inner(form_area);
         frame.render_widget(outer_block, form_area);
 
-        // Layout inside form: label+input for title, directory, prompt, hint, error
+        // Layout inside form: label+input for title, directory, prompt, hint
         let chunks = Layout::vertical([
             Constraint::Length(1),                 // Title label
             Constraint::Length(3),                 // Title input
@@ -426,7 +437,7 @@ impl App {
             Constraint::Length(3),                 // Directory input
             Constraint::Length(1),                 // Prompt label
             Constraint::Length(prompt_box_height), // Prompt input (grows with text)
-            Constraint::Min(1),                    // Hints + error
+            Constraint::Min(1),                    // Hints
         ])
         .split(inner);
 
@@ -552,20 +563,21 @@ impl App {
         } else {
             "Tab: next field  |  Enter: submit  |  Esc: quit"
         };
-        let mut hint_lines: Vec<Line> = vec![Line::from(Span::styled(
+        let hints = Paragraph::new(Line::from(Span::styled(
             hint_text,
             Style::default().fg(theme::GRAY_DIM),
-        ))];
+        )))
+        .alignment(Alignment::Center);
+        frame.render_widget(hints, chunks[6]);
 
         if let Some(ref err) = self.error_message {
-            hint_lines.push(Line::from(Span::styled(
-                err.as_str(),
-                Style::default().fg(theme::ERROR),
-            )));
+            let error_para = Paragraph::new(Line::from(Span::styled(
+                format!(" {err} "),
+                Style::default().fg(Color::White).bg(theme::ERROR),
+            )))
+            .alignment(Alignment::Center);
+            frame.render_widget(error_para, error_area);
         }
-
-        let hints = Paragraph::new(hint_lines);
-        frame.render_widget(hints, chunks[6]);
 
         // Place cursor in focused input
         let (cursor_input, cursor_area) = match self.focused_field {

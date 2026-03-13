@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout},
-    style::{Modifier, Style},
+    layout::{Alignment, Constraint, Flex, Layout},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
@@ -146,14 +146,25 @@ impl SessionList {
 
         let form_width = 70u16.min(area.width.saturating_sub(2));
         let form_height = 20u16.min(area.height.saturating_sub(2));
+        // +1 for status message below the box
+        let total_height = form_height + 1;
 
-        let vertical = Layout::vertical([Constraint::Length(form_height)])
+        let vertical = Layout::vertical([Constraint::Length(total_height)])
             .flex(Flex::Center)
             .split(area);
         let horizontal = Layout::horizontal([Constraint::Length(form_width)])
             .flex(Flex::Center)
             .split(vertical[0]);
-        let panel_area = horizontal[0];
+        let outer_area = horizontal[0];
+
+        // Split into panel box and status line below
+        let outer_chunks = Layout::vertical([
+            Constraint::Length(form_height),
+            Constraint::Length(1),
+        ])
+        .split(outer_area);
+        let panel_area = outer_chunks[0];
+        let status_area = outer_chunks[1];
 
         frame.render_widget(Clear, panel_area);
         frame.render_widget(
@@ -173,7 +184,6 @@ impl SessionList {
         let chunks = Layout::vertical([
             Constraint::Min(1),    // Session list
             Constraint::Length(1), // Hints
-            Constraint::Length(1), // Status
         ])
         .split(inner);
 
@@ -214,15 +224,17 @@ impl SessionList {
         let hints = Paragraph::new(Line::from(Span::styled(
             "j/k: navigate  |  x: kill  |  n: new  |  q: quit",
             Style::default().fg(theme::GRAY_DIM),
-        )));
+        )))
+        .alignment(Alignment::Center);
         frame.render_widget(hints, chunks[1]);
 
         if let Some(ref msg) = self.status_message {
             let status = Paragraph::new(Line::from(Span::styled(
-                msg.as_str(),
-                Style::default().fg(theme::ORANGE),
-            )));
-            frame.render_widget(status, chunks[2]);
+                format!(" {msg} "),
+                Style::default().fg(Color::White).bg(theme::ERROR),
+            )))
+            .alignment(Alignment::Center);
+            frame.render_widget(status, status_area);
         }
     }
 }
