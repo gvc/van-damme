@@ -16,6 +16,7 @@ pub enum SessionListAction {
     None,
     Quit,
     NewTask,
+    Attach { session_name: String },
 }
 
 #[derive(Debug)]
@@ -74,6 +75,7 @@ impl SessionList {
                 self.move_down();
                 SessionListAction::None
             }
+            KeyCode::Char('a') => self.attach_selected(),
             KeyCode::Char('x') => {
                 self.kill_selected();
                 SessionListAction::None
@@ -114,6 +116,17 @@ impl SessionList {
             None => 0,
         };
         self.list_state.select(Some(i));
+    }
+
+    fn attach_selected(&self) -> SessionListAction {
+        if let Some(i) = self.list_state.selected() {
+            let session = &self.sessions[i];
+            SessionListAction::Attach {
+                session_name: session.tmux_session_name.clone(),
+            }
+        } else {
+            SessionListAction::None
+        }
     }
 
     fn kill_selected(&mut self) {
@@ -224,7 +237,7 @@ impl SessionList {
         }
 
         let hints = Paragraph::new(Line::from(Span::styled(
-            "j/k: navigate  |  x: kill  |  n: new  |  q: quit",
+            "j/k: navigate  |  a: attach  |  x: kill  |  n: new  |  q: quit",
             Style::default().fg(theme::GRAY_DIM),
         )))
         .alignment(Alignment::Center);
@@ -342,6 +355,26 @@ mod tests {
         let mut list = SessionList::new(sample_sessions());
         let action = list.handle_key(key(KeyCode::Char('n')));
         assert_eq!(action, SessionListAction::NewTask);
+    }
+
+    #[test]
+    fn test_a_attaches_selected() {
+        let mut list = SessionList::new(sample_sessions());
+        list.handle_key(key(KeyCode::Down)); // select task-two
+        let action = list.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            action,
+            SessionListAction::Attach {
+                session_name: "task-two".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_a_on_empty_is_noop() {
+        let mut list = SessionList::new(vec![]);
+        let action = list.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(action, SessionListAction::None);
     }
 
     #[test]

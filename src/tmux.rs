@@ -163,6 +163,12 @@ pub fn create_session(
     })
 }
 
+/// Switch the current tmux client to the given session.
+/// Use this instead of attach-session when already inside tmux.
+pub fn switch_to_session(name: &str) -> Result<()> {
+    run_tmux(&["switch-client", "-t", name])
+}
+
 /// Kill a tmux session by name.
 pub fn kill_session(name: &str) -> Result<()> {
     run_tmux(&["kill-session", "-t", name])
