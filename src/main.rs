@@ -39,7 +39,8 @@ fn main() -> Result<()> {
         .collect();
 
     let mut session_list = SessionList::new(alive);
-    let mut app = App::new();
+    let recent_dirs = session::recent_directories(5).unwrap_or_default();
+    let mut app = App::with_recent_dirs(recent_dirs.clone());
     let mut screen = Screen::SessionList;
     let mut running = true;
 
@@ -67,7 +68,8 @@ fn main() -> Result<()> {
                                     running = false;
                                 }
                                 SessionListAction::NewTask => {
-                                    app = App::new();
+                                    let recent = session::recent_directories(5).unwrap_or_default();
+                                    app = App::with_recent_dirs(recent);
                                     screen = Screen::NewTask;
                                 }
                                 SessionListAction::None => {}

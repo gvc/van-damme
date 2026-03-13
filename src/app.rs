@@ -138,22 +138,35 @@ pub struct App {
     pub prompt_input: Input,
     pub dir_suggestion: Option<String>,
     pub error_message: Option<String>,
+    pub recent_dirs: Vec<String>,
+    pub recent_dir_selected: Option<usize>,
+    pub show_recent_dirs: bool,
 }
 
 impl App {
+    #[cfg(test)]
     pub fn new() -> Self {
-        let cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        Self::with_recent_dirs(Vec::new())
+    }
+
+    pub fn with_recent_dirs(recent_dirs: Vec<String>) -> Self {
+        let default_dir = recent_dirs.first().cloned().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
 
         Self {
             running: true,
             focused_field: InputField::Title,
             title_input: Input::default(),
-            dir_input: Input::new(cwd),
+            dir_input: Input::new(default_dir),
             prompt_input: Input::default(),
             dir_suggestion: None,
             error_message: None,
+            recent_dirs,
+            recent_dir_selected: None,
+            show_recent_dirs: false,
         }
     }
 
@@ -162,6 +175,11 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        // Handle recent dirs dropdown navigation
+        if self.show_recent_dirs {
+            return self.handle_recent_dirs_key(key);
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.quit();
@@ -185,6 +203,19 @@ impl App {
             }
             KeyCode::Enter => self.handle_enter(),
             _ => {
+                // Ctrl+D toggles recent dirs when on directory field
+                if self.focused_field == InputField::Directory
+                    && key.code == KeyCode::Char('d')
+                    && key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                    && !self.recent_dirs.is_empty()
+                {
+                    self.show_recent_dirs = true;
+                    self.recent_dir_selected = Some(0);
+                    return Action::None;
+                }
+
                 // Forward to focused input
                 match self.focused_field {
                     InputField::Title => {
@@ -204,6 +235,57 @@ impl App {
                 self.error_message = None;
                 Action::None
             }
+        }
+    }
+
+    fn handle_recent_dirs_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => {
+                self.show_recent_dirs = false;
+                self.recent_dir_selected = None;
+                Action::None
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                if let Some(i) = self.recent_dir_selected {
+                    if i > 0 {
+                        self.recent_dir_selected = Some(i - 1);
+                    } else {
+                        self.recent_dir_selected = Some(self.recent_dirs.len() - 1);
+                    }
+                }
+                Action::None
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                if let Some(i) = self.recent_dir_selected {
+                    if i < self.recent_dirs.len() - 1 {
+                        self.recent_dir_selected = Some(i + 1);
+                    } else {
+                        self.recent_dir_selected = Some(0);
+                    }
+                }
+                Action::None
+            }
+            KeyCode::Enter => {
+                if let Some(i) = self.recent_dir_selected
+                    && let Some(dir) = self.recent_dirs.get(i)
+                {
+                    let dir = dir.clone();
+                    self.dir_input = Input::new(dir.clone());
+                    // Move cursor to end
+                    for _ in 0..dir.len() {
+                        self.dir_input
+                            .handle_event(&crossterm::event::Event::Key(KeyEvent::new(
+                                KeyCode::Right,
+                                crossterm::event::KeyModifiers::NONE,
+                            )));
+                    }
+                    self.update_dir_suggestion();
+                }
+                self.show_recent_dirs = false;
+                self.recent_dir_selected = None;
+                Action::None
+            }
+            _ => Action::None,
         }
     }
 
@@ -338,13 +420,13 @@ impl App {
 
         // Layout inside form: label+input for title, directory, prompt, hint, error
         let chunks = Layout::vertical([
-            Constraint::Length(1),                // Title label
-            Constraint::Length(3),                // Title input
-            Constraint::Length(1),                // Directory label
-            Constraint::Length(3),                // Directory input
-            Constraint::Length(1),                // Prompt label
+            Constraint::Length(1),                 // Title label
+            Constraint::Length(3),                 // Title input
+            Constraint::Length(1),                 // Directory label
+            Constraint::Length(3),                 // Directory input
+            Constraint::Length(1),                 // Prompt label
             Constraint::Length(prompt_box_height), // Prompt input (grows with text)
-            Constraint::Min(1),                   // Hints + error
+            Constraint::Min(1),                    // Hints + error
         ])
         .split(inner);
 
@@ -422,13 +504,54 @@ impl App {
             .block(prompt_block);
         frame.render_widget(prompt_para, chunks[5]);
 
-        // Hints + error
-        let hint_text =
-            if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
-                "→: complete path  |  Tab: next field  |  Enter: submit  |  Esc: quit"
-            } else {
-                "Tab: next field  |  Enter: submit  |  Esc: quit"
+        // Recent directories dropdown (rendered over other content)
+        if self.show_recent_dirs && !self.recent_dirs.is_empty() {
+            let dropdown_height = self.recent_dirs.len() as u16 + 2; // +2 for borders
+            let dropdown_area = ratatui::layout::Rect {
+                x: chunks[3].x,
+                y: chunks[3].y + chunks[3].height,
+                width: chunks[3].width,
+                height: dropdown_height.min(7), // max 5 items + 2 borders
             };
+            frame.render_widget(Clear, dropdown_area);
+            let items: Vec<ratatui::widgets::ListItem> = self
+                .recent_dirs
+                .iter()
+                .enumerate()
+                .map(|(i, d)| {
+                    let style = if Some(i) == self.recent_dir_selected {
+                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
+                    } else {
+                        Style::default().fg(theme::GRAY_DIM)
+                    };
+                    ratatui::widgets::ListItem::new(Line::from(Span::styled(d.as_str(), style)))
+                })
+                .collect();
+            let dropdown = ratatui::widgets::List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::ORANGE))
+                    .title(" Recent Directories ")
+                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+                    .style(Style::default().bg(theme::BG)),
+            );
+            frame.render_widget(dropdown, dropdown_area);
+        }
+
+        // Hints + error
+        let hint_text = if self.show_recent_dirs {
+            "↑/↓: select  |  Enter: confirm  |  Esc: cancel"
+        } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
+            if !self.recent_dirs.is_empty() {
+                "→: complete  |  Ctrl+D: recent dirs  |  Tab: next  |  Enter: submit  |  Esc: quit"
+            } else {
+                "→: complete path  |  Tab: next field  |  Enter: submit  |  Esc: quit"
+            }
+        } else if self.focused_field == InputField::Directory && !self.recent_dirs.is_empty() {
+            "Ctrl+D: recent dirs  |  Tab: next field  |  Enter: submit  |  Esc: quit"
+        } else {
+            "Tab: next field  |  Enter: submit  |  Esc: quit"
+        };
         let mut hint_lines: Vec<Line> = vec![Line::from(Span::styled(
             hint_text,
             Style::default().fg(theme::GRAY_DIM),
@@ -730,5 +853,106 @@ mod tests {
         app.focused_field = InputField::Directory;
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::Prompt);
+    }
+
+    #[test]
+    fn test_with_recent_dirs_defaults_to_most_recent() {
+        let dirs = vec!["/home/user/project".to_string(), "/tmp".to_string()];
+        let app = App::with_recent_dirs(dirs);
+        assert_eq!(app.dir_input.value(), "/home/user/project");
+        assert_eq!(app.recent_dirs.len(), 2);
+    }
+
+    #[test]
+    fn test_with_empty_recent_dirs_defaults_to_cwd() {
+        let app = App::with_recent_dirs(Vec::new());
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(app.dir_input.value(), cwd);
+    }
+
+    fn ctrl_d() -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char('d'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn test_ctrl_d_opens_recent_dirs_dropdown() {
+        let dirs = vec!["/tmp".to_string(), "/home".to_string()];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+        assert!(app.show_recent_dirs);
+        assert_eq!(app.recent_dir_selected, Some(0));
+    }
+
+    #[test]
+    fn test_ctrl_d_noop_without_recent_dirs() {
+        let mut app = App::new();
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+        assert!(!app.show_recent_dirs);
+    }
+
+    #[test]
+    fn test_ctrl_d_noop_on_other_fields() {
+        let dirs = vec!["/tmp".to_string()];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Title;
+        app.handle_key(ctrl_d());
+        assert!(!app.show_recent_dirs);
+    }
+
+    #[test]
+    fn test_recent_dirs_navigate_down_and_up() {
+        let dirs = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.recent_dir_selected, Some(1));
+
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.recent_dir_selected, Some(2));
+
+        // Wraps around
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.recent_dir_selected, Some(0));
+
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.recent_dir_selected, Some(2));
+    }
+
+    #[test]
+    fn test_recent_dirs_enter_selects() {
+        let dirs = vec!["/tmp".to_string(), "/home".to_string()];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+        app.handle_key(key(KeyCode::Down)); // select /home
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(!app.show_recent_dirs);
+        assert_eq!(app.dir_input.value(), "/home");
+    }
+
+    #[test]
+    fn test_recent_dirs_esc_cancels() {
+        let dirs = vec!["/tmp".to_string()];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        let original_dir = app.dir_input.value().to_string();
+        app.handle_key(ctrl_d());
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(!app.show_recent_dirs);
+        assert_eq!(app.dir_input.value(), original_dir);
     }
 }
