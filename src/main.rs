@@ -1,5 +1,6 @@
 mod app;
 mod event;
+mod recent_dirs;
 mod session;
 mod session_list;
 pub mod theme;
@@ -39,7 +40,7 @@ fn main() -> Result<()> {
         .collect();
 
     let mut session_list = SessionList::new(alive);
-    let recent_dirs = session::recent_directories(5).unwrap_or_default();
+    let recent_dirs = recent_dirs::recent_directories(5).unwrap_or_default();
     let mut app = App::with_recent_dirs(recent_dirs.clone());
     let mut screen = Screen::SessionList;
     let mut running = true;
@@ -68,7 +69,7 @@ fn main() -> Result<()> {
                                     running = false;
                                 }
                                 SessionListAction::NewTask => {
-                                    let recent = session::recent_directories(5).unwrap_or_default();
+                                    let recent = recent_dirs::recent_directories(5).unwrap_or_default();
                                     app = App::with_recent_dirs(recent);
                                     screen = Screen::NewTask;
                                 }
@@ -157,6 +158,8 @@ fn launch_session(
         tmux_session.session_name.clone(),
         directory.to_string(),
     )?;
+
+    recent_dirs::record_directory(directory)?;
 
     Ok(())
 }
