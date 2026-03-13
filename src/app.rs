@@ -127,6 +127,7 @@ pub enum InputField {
     Title,
     Directory,
     Prompt,
+    ClaudeArgs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +138,7 @@ pub enum Action {
         title: String,
         directory: String,
         prompt: Option<String>,
+        claude_args: Option<String>,
     },
 }
 
@@ -147,6 +149,7 @@ pub struct App {
     pub title_input: Input,
     pub dir_input: Input,
     pub prompt_input: Input,
+    pub claude_args_input: Input,
     pub dir_suggestion: Option<String>,
     pub error_message: Option<String>,
     pub recent_dirs: Vec<String>,
@@ -173,6 +176,7 @@ impl App {
             title_input: Input::default(),
             dir_input: Input::new(default_dir),
             prompt_input: Input::default(),
+            claude_args_input: Input::default(),
             dir_suggestion: None,
             error_message: None,
             recent_dirs,
@@ -240,6 +244,10 @@ impl App {
                     }
                     InputField::Prompt => {
                         self.prompt_input
+                            .handle_event(&crossterm::event::Event::Key(key));
+                    }
+                    InputField::ClaudeArgs => {
+                        self.claude_args_input
                             .handle_event(&crossterm::event::Event::Key(key));
                     }
                 }
@@ -337,15 +345,17 @@ impl App {
         self.focused_field = match self.focused_field {
             InputField::Title => InputField::Directory,
             InputField::Directory => InputField::Prompt,
-            InputField::Prompt => InputField::Title,
+            InputField::Prompt => InputField::ClaudeArgs,
+            InputField::ClaudeArgs => InputField::Title,
         };
     }
 
     fn prev_field(&mut self) {
         self.focused_field = match self.focused_field {
-            InputField::Title => InputField::Prompt,
+            InputField::Title => InputField::ClaudeArgs,
             InputField::Directory => InputField::Title,
             InputField::Prompt => InputField::Directory,
+            InputField::ClaudeArgs => InputField::Prompt,
         };
     }
 
@@ -376,10 +386,18 @@ impl App {
             Some(prompt_raw)
         };
 
+        let args_raw = self.claude_args_input.value().trim().to_string();
+        let claude_args = if args_raw.is_empty() {
+            None
+        } else {
+            Some(args_raw)
+        };
+
         Action::Submit {
             title,
             directory,
             prompt,
+            claude_args,
         }
     }
 
@@ -402,8 +420,8 @@ impl App {
         let max_prompt_height = area.height.saturating_sub(16); // leave room for other fields
         let prompt_box_height = (prompt_lines + 2).min(max_prompt_height).max(3);
 
-        // 2 (outer border) + 1+3+1+3+1 (labels+inputs) + prompt_box_height + 1 (hints)
-        let form_height = (12 + prompt_box_height).min(area.height.saturating_sub(2));
+        // 2 (outer border) + 1+3+1+3+1+prompt+1+3+1 (labels+inputs) + 1 (hints)
+        let form_height = (16 + prompt_box_height).min(area.height.saturating_sub(2));
         // +1 for error line below the box
         let total_height = form_height + 1;
 
@@ -416,11 +434,9 @@ impl App {
         let outer_area = horizontal[0];
 
         // Split into form box and error line below
-        let outer_chunks = Layout::vertical([
-            Constraint::Length(form_height),
-            Constraint::Length(1),
-        ])
-        .split(outer_area);
+        let outer_chunks =
+            Layout::vertical([Constraint::Length(form_height), Constraint::Length(1)])
+                .split(outer_area);
         let form_area = outer_chunks[0];
         let error_area = outer_chunks[1];
 
@@ -440,7 +456,7 @@ impl App {
         let inner = outer_block.inner(form_area);
         frame.render_widget(outer_block, form_area);
 
-        // Layout inside form: label+input for title, directory, prompt, hint
+        // Layout inside form: label+input for title, directory, prompt, claude args, hint
         let chunks = Layout::vertical([
             Constraint::Length(1),                 // Title label
             Constraint::Length(3),                 // Title input
@@ -448,6 +464,8 @@ impl App {
             Constraint::Length(3),                 // Directory input
             Constraint::Length(1),                 // Prompt label
             Constraint::Length(prompt_box_height), // Prompt input (grows with text)
+            Constraint::Length(1),                 // Claude args label
+            Constraint::Length(3),                 // Claude args input
             Constraint::Min(1),                    // Hints
         ])
         .split(inner);
@@ -505,7 +523,7 @@ impl App {
         frame.render_widget(dir_para, chunks[3]);
 
         // Prompt label
-        let prompt_label = Paragraph::new("Initial prompt (optional):")
+        let prompt_label = Paragraph::new("Prompt (optional):")
             .style(Style::default().fg(theme::TEXT).bg(theme::BG));
         frame.render_widget(prompt_label, chunks[4]);
 
@@ -526,6 +544,27 @@ impl App {
             .style(Style::default().fg(theme::TEXT))
             .block(prompt_block);
         frame.render_widget(prompt_para, chunks[5]);
+
+        // Claude args label
+        let args_label = Paragraph::new("Additional CLI args (optional):")
+            .style(Style::default().fg(theme::TEXT).bg(theme::BG));
+        frame.render_widget(args_label, chunks[6]);
+
+        // Claude args input
+        let args_border_color = if self.focused_field == InputField::ClaudeArgs {
+            theme::ORANGE_BRIGHT
+        } else {
+            theme::GRAY
+        };
+        let args_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(args_border_color))
+            .style(Style::default().bg(theme::BG));
+        let args_inner = args_block.inner(chunks[7]);
+        let args_para = Paragraph::new(self.claude_args_input.value())
+            .style(Style::default().fg(theme::TEXT))
+            .block(args_block);
+        frame.render_widget(args_para, chunks[7]);
 
         // Recent directories dropdown (rendered over other content)
         if self.show_recent_dirs && !self.recent_dirs.is_empty() {
@@ -580,7 +619,7 @@ impl App {
             Style::default().fg(theme::GRAY_DIM),
         )))
         .alignment(Alignment::Center);
-        frame.render_widget(hints, chunks[6]);
+        frame.render_widget(hints, chunks[8]);
 
         if let Some(ref err) = self.error_message {
             let error_para = Paragraph::new(Line::from(Span::styled(
@@ -596,6 +635,7 @@ impl App {
             InputField::Title => (&self.title_input, title_inner),
             InputField::Directory => (&self.dir_input, dir_inner),
             InputField::Prompt => (&self.prompt_input, prompt_inner),
+            InputField::ClaudeArgs => (&self.claude_args_input, args_inner),
         };
         let visual_cursor = cursor_input.visual_cursor() as u16;
         let inner_width = cursor_area.width;
@@ -652,6 +692,9 @@ mod tests {
         assert_eq!(app.focused_field, InputField::Prompt);
 
         app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::ClaudeArgs);
+
+        app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::Title);
     }
 
@@ -696,6 +739,7 @@ mod tests {
                 title: "my task".to_string(),
                 directory: "/tmp".to_string(),
                 prompt: None,
+                claude_args: None,
             }
         );
     }
@@ -734,6 +778,10 @@ mod tests {
         assert_eq!(app.focused_field, InputField::Directory);
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.focused_field, InputField::Prompt);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.focused_field, InputField::ClaudeArgs);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.focused_field, InputField::Prompt);
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.focused_field, InputField::Directory);
         app.handle_key(key(KeyCode::Up));
@@ -762,6 +810,35 @@ mod tests {
                     .to_string_lossy()
                     .to_string(),
                 prompt: Some("fix the bug".to_string()),
+                claude_args: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_submit_with_claude_args() {
+        let mut app = App::new();
+        for ch in "my task".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        // Skip to claude args field
+        app.handle_key(key(KeyCode::Tab)); // -> Directory
+        app.handle_key(key(KeyCode::Tab)); // -> Prompt
+        app.handle_key(key(KeyCode::Tab)); // -> ClaudeArgs
+        for ch in "--model sonnet".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        let action = app.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::Submit {
+                title: "my task".to_string(),
+                directory: std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
+                prompt: None,
+                claude_args: Some("--model sonnet".to_string()),
             }
         );
     }

@@ -158,11 +158,9 @@ impl SessionList {
         let outer_area = horizontal[0];
 
         // Split into panel box and status line below
-        let outer_chunks = Layout::vertical([
-            Constraint::Length(form_height),
-            Constraint::Length(1),
-        ])
-        .split(outer_area);
+        let outer_chunks =
+            Layout::vertical([Constraint::Length(form_height), Constraint::Length(1)])
+                .split(outer_area);
         let panel_area = outer_chunks[0];
         let status_area = outer_chunks[1];
 
