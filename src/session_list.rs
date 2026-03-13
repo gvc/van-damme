@@ -2,12 +2,13 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 use crate::session::SessionRecord;
+use crate::theme;
 use crate::tmux;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,11 +161,17 @@ impl SessionList {
         let panel_area = horizontal[0];
 
         frame.render_widget(Clear, panel_area);
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::BG)),
+            panel_area,
+        );
 
         let outer_block = Block::default()
             .title(" Active Sessions ")
+            .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(theme::ORANGE))
+            .style(Style::default().bg(theme::BG));
         let inner = outer_block.inner(panel_area);
         frame.render_widget(outer_block, panel_area);
 
@@ -177,7 +184,7 @@ impl SessionList {
 
         if self.sessions.is_empty() {
             let empty = Paragraph::new("No active sessions. Press 'n' to create one.")
-                .style(Style::default().fg(Color::DarkGray));
+                .style(Style::default().fg(theme::GRAY_DIM));
             frame.render_widget(empty, chunks[0]);
         } else {
             let items: Vec<ListItem> = self
@@ -188,11 +195,11 @@ impl SessionList {
                         Span::styled(
                             &s.tmux_session_name,
                             Style::default()
-                                .fg(Color::Green)
+                                .fg(theme::SESSION_NAME)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw("  "),
-                        Span::styled(&s.directory, Style::default().fg(Color::DarkGray)),
+                        Span::styled(&s.directory, Style::default().fg(theme::GRAY_DIM)),
                     ]);
                     ListItem::new(line)
                 })
@@ -201,7 +208,7 @@ impl SessionList {
             let list = List::new(items)
                 .highlight_style(
                     Style::default()
-                        .bg(Color::DarkGray)
+                        .bg(theme::GRAY)
                         .add_modifier(Modifier::BOLD),
                 )
                 .highlight_symbol("▸ ");
@@ -209,14 +216,17 @@ impl SessionList {
             frame.render_stateful_widget(list, chunks[0], &mut self.list_state);
         }
 
-        let hints = Paragraph::new(Line::from(
-            Span::raw("j/k: navigate  |  Enter: attach  |  x: kill  |  n: new  |  q: quit")
-                .dark_gray(),
-        ));
+        let hints = Paragraph::new(Line::from(Span::styled(
+            "j/k: navigate  |  Enter: attach  |  x: kill  |  n: new  |  q: quit",
+            Style::default().fg(theme::GRAY_DIM),
+        )));
         frame.render_widget(hints, chunks[1]);
 
         if let Some(ref msg) = self.status_message {
-            let status = Paragraph::new(Line::from(Span::raw(msg.as_str()).fg(Color::Yellow)));
+            let status = Paragraph::new(Line::from(Span::styled(
+                msg.as_str(),
+                Style::default().fg(theme::ORANGE),
+            )));
             frame.render_widget(status, chunks[2]);
         }
     }

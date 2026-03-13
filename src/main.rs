@@ -2,10 +2,12 @@ mod app;
 mod event;
 mod session;
 mod session_list;
+pub mod theme;
 mod tmux;
 mod tui;
 
 use color_eyre::Result;
+use ratatui::{style::Style, widgets::Block};
 
 use app::{Action, App};
 use event::{Event, EventHandler};
@@ -36,9 +38,16 @@ fn main() -> Result<()> {
     let mut running = true;
 
     while running {
-        terminal.draw(|frame| match screen {
-            Screen::SessionList => session_list.draw(frame),
-            Screen::NewTask => app.draw(frame),
+        terminal.draw(|frame| {
+            // Fill entire screen with theme background
+            frame.render_widget(
+                Block::default().style(Style::default().bg(theme::BG)),
+                frame.area(),
+            );
+            match screen {
+                Screen::SessionList => session_list.draw(frame),
+                Screen::NewTask => app.draw(frame),
+            }
         })?;
 
         match events.next()? {

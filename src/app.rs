@@ -2,13 +2,15 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Position},
-    style::{Color, Style, Stylize},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
 use std::path::Path;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
+
+use crate::theme;
 
 /// Compute directory tab-completion for a given input path.
 /// Returns the completed path if there's a unique or common-prefix completion,
@@ -303,13 +305,19 @@ impl App {
             .split(vertical[0]);
         let form_area = horizontal[0];
 
-        // Clear area behind form
+        // Clear area behind form and fill with background
         frame.render_widget(Clear, form_area);
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::BG)),
+            form_area,
+        );
 
         let outer_block = Block::default()
             .title(" New Task ")
+            .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(theme::ORANGE))
+            .style(Style::default().bg(theme::BG));
         let inner = outer_block.inner(form_area);
         frame.render_widget(outer_block, form_area);
 
@@ -326,63 +334,76 @@ impl App {
         .split(inner);
 
         // Title label
-        let title_label = Paragraph::new("Title:");
+        let title_label =
+            Paragraph::new("Title:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
         frame.render_widget(title_label, chunks[0]);
 
         // Title input
         let title_border_color = if self.focused_field == InputField::Title {
-            Color::Yellow
+            theme::ORANGE_BRIGHT
         } else {
-            Color::DarkGray
+            theme::GRAY
         };
         let title_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(title_border_color));
+            .border_style(Style::default().fg(title_border_color))
+            .style(Style::default().bg(theme::BG));
         let title_inner = title_block.inner(chunks[1]);
-        let title_para = Paragraph::new(self.title_input.value()).block(title_block);
+        let title_para = Paragraph::new(self.title_input.value())
+            .style(Style::default().fg(theme::TEXT))
+            .block(title_block);
         frame.render_widget(title_para, chunks[1]);
 
         // Directory label
-        let dir_label = Paragraph::new("Directory:");
+        let dir_label =
+            Paragraph::new("Directory:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
         frame.render_widget(dir_label, chunks[2]);
 
         // Directory input
         let dir_border_color = if self.focused_field == InputField::Directory {
-            Color::Yellow
+            theme::ORANGE_BRIGHT
         } else {
-            Color::DarkGray
+            theme::GRAY
         };
         let dir_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(dir_border_color));
+            .border_style(Style::default().fg(dir_border_color))
+            .style(Style::default().bg(theme::BG));
         let dir_inner = dir_block.inner(chunks[3]);
         let dir_value = self.dir_input.value();
         let dir_line = if let Some(ref suggestion) = self.dir_suggestion {
             Line::from(vec![
-                Span::raw(dir_value.to_string()),
-                Span::styled(suggestion.as_str(), Style::default().fg(Color::DarkGray)),
+                Span::styled(dir_value.to_string(), Style::default().fg(theme::TEXT)),
+                Span::styled(suggestion.as_str(), Style::default().fg(theme::BLUE)),
             ])
         } else {
-            Line::from(dir_value.to_string())
+            Line::from(Span::styled(
+                dir_value.to_string(),
+                Style::default().fg(theme::TEXT),
+            ))
         };
         let dir_para = Paragraph::new(dir_line).block(dir_block);
         frame.render_widget(dir_para, chunks[3]);
 
         // Prompt label
-        let prompt_label = Paragraph::new("Initial prompt (optional):");
+        let prompt_label = Paragraph::new("Initial prompt (optional):")
+            .style(Style::default().fg(theme::TEXT).bg(theme::BG));
         frame.render_widget(prompt_label, chunks[4]);
 
         // Prompt input
         let prompt_border_color = if self.focused_field == InputField::Prompt {
-            Color::Yellow
+            theme::ORANGE_BRIGHT
         } else {
-            Color::DarkGray
+            theme::GRAY
         };
         let prompt_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(prompt_border_color));
+            .border_style(Style::default().fg(prompt_border_color))
+            .style(Style::default().bg(theme::BG));
         let prompt_inner = prompt_block.inner(chunks[5]);
-        let prompt_para = Paragraph::new(self.prompt_input.value()).block(prompt_block);
+        let prompt_para = Paragraph::new(self.prompt_input.value())
+            .style(Style::default().fg(theme::TEXT))
+            .block(prompt_block);
         frame.render_widget(prompt_para, chunks[5]);
 
         // Hints + error
@@ -392,10 +413,16 @@ impl App {
             } else {
                 "Tab: next field  |  Enter: submit  |  Esc: quit"
             };
-        let mut hint_lines: Vec<Line> = vec![Line::from(Span::raw(hint_text).dark_gray())];
+        let mut hint_lines: Vec<Line> = vec![Line::from(Span::styled(
+            hint_text,
+            Style::default().fg(theme::GRAY_DIM),
+        ))];
 
         if let Some(ref err) = self.error_message {
-            hint_lines.push(Line::from(Span::raw(err.as_str()).fg(Color::Red)));
+            hint_lines.push(Line::from(Span::styled(
+                err.as_str(),
+                Style::default().fg(theme::ERROR),
+            )));
         }
 
         let hints = Paragraph::new(hint_lines);
