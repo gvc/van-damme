@@ -73,8 +73,8 @@ pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<Tmu
         return Err(eyre!("Failed to create tmux session '{name}'"));
     }
 
-    // The worktree lives at <dir>/.claude/<name>
-    let worktree_dir = format!("{dir}/.claude/{name}");
+    // The worktree lives at <dir>/.claude/worktrees/<name>
+    let worktree_dir = format!("{dir}/.claude/worktrees/{name}");
 
     // Ensure the worktree directory exists before opening editor in it
     // (claude --worktree creates it, but there may be a race)
