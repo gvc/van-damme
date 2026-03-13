@@ -1,5 +1,6 @@
 mod app;
 mod event;
+mod process_hook;
 mod session;
 mod session_list;
 pub mod theme;
@@ -24,6 +25,9 @@ fn main() -> Result<()> {
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+    if args.get(1).is_some_and(|a| a == "process-hook") {
+        return process_hook::run();
     }
 
     color_eyre::install()?;
@@ -155,6 +159,7 @@ fn launch_session(
     session::add_session(
         tmux_session.session_id,
         tmux_session.session_name.clone(),
+        tmux_session.claude_session_id,
         directory.to_string(),
     )?;
 

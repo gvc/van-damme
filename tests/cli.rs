@@ -22,3 +22,50 @@ fn test_version_short_flag() {
     assert!(output.status.success());
     assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
 }
+
+#[test]
+fn test_process_hook_writes_to_debug_log() {
+    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+        .arg("process-hook")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(ref mut stdin) = child.stdin {
+                stdin
+                    .write_all(br#"{"session_id":"test-123","hook_event_name":"Stop"}"#)
+                    .unwrap();
+            }
+            child.wait_with_output()
+        })
+        .expect("failed to run binary");
+    assert!(output.status.success());
+    let log_path = dirs::home_dir()
+        .unwrap()
+        .join(".van-damme")
+        .join("debug.log");
+    let contents = std::fs::read_to_string(&log_path).unwrap();
+    assert!(contents.contains(r#""session_id": "test-123""#));
+    assert!(contents.contains(r#""hook_event_name": "Stop""#));
+}
+
+#[test]
+fn test_process_hook_rejects_invalid_json() {
+    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+        .arg("process-hook")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(ref mut stdin) = child.stdin {
+                stdin.write_all(b"not json").unwrap();
+            }
+            child.wait_with_output()
+        })
+        .expect("failed to run binary");
+    assert!(!output.status.success());
+}
