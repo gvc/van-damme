@@ -64,11 +64,6 @@ fn main() -> Result<()> {
                                     app = App::new();
                                     screen = Screen::NewTask;
                                 }
-                                SessionListAction::Attach { session_name } => {
-                                    tui::restore()?;
-                                    attach_session(&session_name)?;
-                                    running = false;
-                                }
                                 SessionListAction::None => {}
                             }
                         }
@@ -108,18 +103,6 @@ fn main() -> Result<()> {
         tui::restore()?;
     }
 
-    Ok(())
-}
-
-fn attach_session(session_name: &str) -> Result<()> {
-    let status = std::process::Command::new("tmux")
-        .args(["attach", "-t", session_name])
-        .status()?;
-    if !status.success() {
-        return Err(color_eyre::eyre::eyre!(
-            "Failed to attach to session '{session_name}'"
-        ));
-    }
     Ok(())
 }
 
