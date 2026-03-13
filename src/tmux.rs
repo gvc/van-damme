@@ -115,7 +115,24 @@ pub fn create_session(
         &abs_dir
     };
 
-    // Create editor window
+    // Split claude window horizontally to add a terminal pane
+    run_tmux(&[
+        "split-window",
+        "-h",
+        "-t",
+        &format!("{name}:claude"),
+        "-c",
+        editor_dir,
+    ])?;
+
+    // Keep focus on the claude pane (left)
+    run_tmux(&[
+        "select-pane",
+        "-t",
+        &format!("{name}:claude.0"),
+    ])?;
+
+    // Create editor window with vim
     run_tmux(&["new-window", "-t", name, "-n", "editor", "-c", editor_dir])?;
 
     // Open vim in editor window
@@ -125,16 +142,6 @@ pub fn create_session(
         &format!("{name}:editor"),
         "vim .",
         "Enter",
-    ])?;
-
-    // Split editor window horizontally
-    run_tmux(&[
-        "split-window",
-        "-h",
-        "-t",
-        &format!("{name}:editor"),
-        "-c",
-        editor_dir,
     ])?;
 
     // Select the first window (claude) as the default when attaching
