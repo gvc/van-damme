@@ -119,6 +119,11 @@ pub fn create_session(name: &str, dir: &str) -> Result<TmuxSession> {
     })
 }
 
+/// Kill a tmux session by name.
+pub fn kill_session(name: &str) -> Result<()> {
+    run_tmux(&["kill-session", "-t", name])
+}
+
 fn run_tmux(args: &[&str]) -> Result<()> {
     let status = Command::new("tmux").args(args).status()?;
     if !status.success() {

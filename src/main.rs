@@ -1,6 +1,7 @@
 mod app;
 mod event;
 mod session;
+mod session_list;
 mod tmux;
 mod tui;
 
@@ -8,35 +9,79 @@ use color_eyre::Result;
 
 use app::{Action, App};
 use event::{Event, EventHandler};
+use session_list::{SessionList, SessionListAction};
+
+#[derive(Debug)]
+enum Screen {
+    SessionList,
+    NewTask,
+}
 
 fn main() -> Result<()> {
     color_eyre::install()?;
 
     let mut terminal = tui::init()?;
-    let mut app = App::new();
     let events = EventHandler::new(250);
 
-    while app.running {
-        terminal.draw(|frame| app.draw(frame))?;
+    let sessions = session::list_sessions().unwrap_or_default();
+    // Filter to only sessions still alive in tmux
+    let alive: Vec<_> = sessions
+        .into_iter()
+        .filter(|s| tmux::session_exists(&s.tmux_session_name).unwrap_or(false))
+        .collect();
+
+    let mut session_list = SessionList::new(alive);
+    let mut app = App::new();
+    let mut screen = Screen::SessionList;
+    let mut running = true;
+
+    while running {
+        terminal.draw(|frame| match screen {
+            Screen::SessionList => session_list.draw(frame),
+            Screen::NewTask => app.draw(frame),
+        })?;
 
         match events.next()? {
             Event::Key(key) => {
                 if key.kind == crossterm::event::KeyEventKind::Press {
-                    let action = app.handle_key(key);
-                    match action {
-                        Action::Submit { title, directory } => {
-                            // Leave alternate screen before running tmux commands
-                            tui::restore()?;
-
-                            if let Err(e) = launch_session(&title, &directory) {
-                                eprintln!("Error: {e}");
-                                std::process::exit(1);
+                    match screen {
+                        Screen::SessionList => {
+                            let action = session_list.handle_key(key);
+                            match action {
+                                SessionListAction::Quit => {
+                                    running = false;
+                                }
+                                SessionListAction::NewTask => {
+                                    app = App::new();
+                                    screen = Screen::NewTask;
+                                }
+                                SessionListAction::Attach { session_name } => {
+                                    tui::restore()?;
+                                    attach_session(&session_name)?;
+                                    running = false;
+                                }
+                                SessionListAction::None => {}
                             }
-
-                            app.running = false;
                         }
-                        Action::Quit => {}
-                        Action::None => {}
+                        Screen::NewTask => {
+                            let action = app.handle_key(key);
+                            match action {
+                                Action::Submit { title, directory } => {
+                                    tui::restore()?;
+                                    if let Err(e) = launch_session(&title, &directory) {
+                                        eprintln!("Error: {e}");
+                                        std::process::exit(1);
+                                    }
+                                    running = false;
+                                }
+                                Action::Quit => {
+                                    // Go back to session list instead of quitting
+                                    session_list.refresh();
+                                    screen = Screen::SessionList;
+                                }
+                                Action::None => {}
+                            }
+                        }
                     }
                 }
             }
@@ -44,11 +89,22 @@ fn main() -> Result<()> {
         }
     }
 
-    // Only restore if we haven't already (Submit path restores early)
     if crossterm::terminal::is_raw_mode_enabled()? {
         tui::restore()?;
     }
 
+    Ok(())
+}
+
+fn attach_session(session_name: &str) -> Result<()> {
+    let status = std::process::Command::new("tmux")
+        .args(["attach", "-t", session_name])
+        .status()?;
+    if !status.success() {
+        return Err(color_eyre::eyre::eyre!(
+            "Failed to attach to session '{session_name}'"
+        ));
+    }
     Ok(())
 }
 
@@ -61,7 +117,6 @@ fn launch_session(title: &str, directory: &str) -> Result<()> {
         ));
     }
 
-    // Check tmux is available
     if std::process::Command::new("tmux")
         .arg("-V")
         .stdout(std::process::Stdio::null())
@@ -74,7 +129,6 @@ fn launch_session(title: &str, directory: &str) -> Result<()> {
         ));
     }
 
-    // Check for name collision
     if tmux::session_exists(&session_name)? {
         return Err(color_eyre::eyre::eyre!(
             "tmux session '{session_name}' already exists"

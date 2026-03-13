@@ -44,6 +44,31 @@ fn save_db_to(path: &Path, db: &SessionDb) -> Result<()> {
     Ok(())
 }
 
+/// Load all session records from disk.
+pub fn list_sessions() -> Result<Vec<SessionRecord>> {
+    let path = default_db_path()?;
+    list_sessions_from(&path)
+}
+
+fn list_sessions_from(path: &Path) -> Result<Vec<SessionRecord>> {
+    let db = load_db_from(path)?;
+    Ok(db.sessions)
+}
+
+/// Remove a session record by tmux session name and persist to disk.
+pub fn remove_session(tmux_session_name: &str) -> Result<()> {
+    let path = default_db_path()?;
+    remove_session_from(&path, tmux_session_name)
+}
+
+fn remove_session_from(path: &Path, tmux_session_name: &str) -> Result<()> {
+    let mut db = load_db_from(path)?;
+    db.sessions
+        .retain(|s| s.tmux_session_name != tmux_session_name);
+    save_db_to(path, &db)?;
+    Ok(())
+}
+
 /// Add a new session record and persist to disk.
 pub fn add_session(
     tmux_session_id: String,
@@ -168,6 +193,79 @@ mod tests {
 
         let db = load_db_from(&path).unwrap();
         assert_eq!(db.sessions.len(), 2);
+    }
+
+    #[test]
+    fn test_list_sessions_from() {
+        let (_tmp, path) = temp_db_path();
+        add_session_to(
+            &path,
+            "$1".to_string(),
+            "first".to_string(),
+            "/tmp".to_string(),
+        )
+        .unwrap();
+        add_session_to(
+            &path,
+            "$2".to_string(),
+            "second".to_string(),
+            "/tmp".to_string(),
+        )
+        .unwrap();
+
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].tmux_session_name, "first");
+        assert_eq!(sessions[1].tmux_session_name, "second");
+    }
+
+    #[test]
+    fn test_list_sessions_empty() {
+        let (_tmp, path) = temp_db_path();
+        let sessions = list_sessions_from(&path).unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn test_remove_session() {
+        let (_tmp, path) = temp_db_path();
+        add_session_to(
+            &path,
+            "$1".to_string(),
+            "first".to_string(),
+            "/tmp".to_string(),
+        )
+        .unwrap();
+        add_session_to(
+            &path,
+            "$2".to_string(),
+            "second".to_string(),
+            "/tmp".to_string(),
+        )
+        .unwrap();
+
+        remove_session_from(&path, "first").unwrap();
+
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].tmux_session_name, "second");
+    }
+
+    #[test]
+    fn test_remove_nonexistent_session() {
+        let (_tmp, path) = temp_db_path();
+        add_session_to(
+            &path,
+            "$1".to_string(),
+            "first".to_string(),
+            "/tmp".to_string(),
+        )
+        .unwrap();
+
+        remove_session_from(&path, "nonexistent").unwrap();
+
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions.len(), 1);
     }
 
     #[test]
