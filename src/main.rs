@@ -80,14 +80,14 @@ fn main() -> Result<()> {
                                     directory,
                                     prompt,
                                 } => {
-                                    tui::restore()?;
                                     if let Err(e) =
                                         launch_session(&title, &directory, prompt.as_deref())
                                     {
-                                        eprintln!("Error: {e}");
-                                        std::process::exit(1);
+                                        app.error_message = Some(format!("{e}"));
+                                    } else {
+                                        session_list.refresh();
+                                        screen = Screen::SessionList;
                                     }
-                                    running = false;
                                 }
                                 Action::Quit => {
                                     // Go back to session list instead of quitting
@@ -157,9 +157,6 @@ fn launch_session(title: &str, directory: &str, prompt: Option<&str>) -> Result<
         tmux_session.session_name.clone(),
         directory.to_string(),
     )?;
-
-    println!("Created tmux session: {}", tmux_session.session_name);
-    println!("Attach with: tmux attach -t {}", tmux_session.session_name);
 
     Ok(())
 }

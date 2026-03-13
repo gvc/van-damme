@@ -49,9 +49,9 @@ pub fn session_exists(name: &str) -> Result<bool> {
 /// Create a new tmux session with Claude and editor windows.
 /// If `prompt` is provided, it will be sent to Claude as an initial prompt.
 pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<TmuxSession> {
-    // Build the claude command, optionally with --prompt
+    // Build the claude command, optionally with an initial prompt
     let claude_cmd = match prompt {
-        Some(p) => format!("claude --worktree {name} -p {}", shell_escape(p)),
+        Some(p) => format!("claude --worktree {name} {}", shell_escape(p)),
         None => format!("claude --worktree {name}"),
     };
 
