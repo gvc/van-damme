@@ -73,6 +73,12 @@ fn main() -> Result<()> {
                                     app = App::with_recent_dirs(recent);
                                     screen = Screen::NewTask;
                                 }
+                                SessionListAction::Attach { session_name } => {
+                                    tui::restore()?;
+                                    let _ = tmux::switch_to_session(&session_name);
+                                    terminal = tui::init()?;
+                                    session_list.refresh();
+                                }
                                 SessionListAction::None => {}
                             }
                         }
