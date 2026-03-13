@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Flex, Layout},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
@@ -144,8 +144,8 @@ impl SessionList {
     pub fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
-        let form_width = 70u16.min(area.width.saturating_sub(2));
-        let form_height = 20u16.min(area.height.saturating_sub(2));
+        let form_width = 90u16.min(area.width.saturating_sub(2));
+        let form_height = 30u16.min(area.height.saturating_sub(2));
         // +1 for status message below the box
         let total_height = form_height + 1;
 
@@ -188,9 +188,13 @@ impl SessionList {
         .split(inner);
 
         if self.sessions.is_empty() {
+            let area = chunks[0];
+            let vertical_center = area.y + area.height / 2;
+            let centered_area = Rect::new(area.x, vertical_center, area.width, 1);
             let empty = Paragraph::new("No active sessions. Press 'n' to create one.")
-                .style(Style::default().fg(theme::GRAY_DIM));
-            frame.render_widget(empty, chunks[0]);
+                .style(Style::default().fg(theme::GRAY_DIM))
+                .alignment(Alignment::Center);
+            frame.render_widget(empty, centered_area);
         } else {
             let items: Vec<ListItem> = self
                 .sessions

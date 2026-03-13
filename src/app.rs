@@ -4,13 +4,24 @@ use ratatui::{
     layout::{Alignment, Constraint, Flex, Layout, Position},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 use std::path::Path;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::theme;
+
+/// Break text into lines of at most `width` characters (character-level wrapping).
+/// Returns a Vec of line strings. This matches the cursor math which uses
+/// `visual_cursor % width` and `visual_cursor / width`.
+fn char_wrap_lines(text: &str, width: usize) -> Vec<String> {
+    if width == 0 || text.is_empty() {
+        return vec![text.to_string()];
+    }
+    let chars: Vec<char> = text.chars().collect();
+    chars.chunks(width).map(|c| c.iter().collect()).collect()
+}
 
 /// Compute directory tab-completion for a given input path.
 /// Returns the completed path if there's a unique or common-prefix completion,
@@ -376,7 +387,7 @@ impl App {
         let area = frame.area();
 
         // Centered form: 60 wide, dynamically sized vertically
-        let form_width = 60u16.min(area.width.saturating_sub(2));
+        let form_width = 90u16.min(area.width.saturating_sub(2));
 
         // Calculate prompt input height based on text wrapping
         // Inner width = form_width - 2 (outer border) - 2 (input border)
@@ -509,9 +520,10 @@ impl App {
             .border_style(Style::default().fg(prompt_border_color))
             .style(Style::default().bg(theme::BG));
         let prompt_inner = prompt_block.inner(chunks[5]);
-        let prompt_para = Paragraph::new(self.prompt_input.value())
+        let wrapped_lines = char_wrap_lines(self.prompt_input.value(), prompt_inner.width as usize);
+        let lines: Vec<Line> = wrapped_lines.into_iter().map(Line::from).collect();
+        let prompt_para = Paragraph::new(lines)
             .style(Style::default().fg(theme::TEXT))
-            .wrap(Wrap { trim: false })
             .block(prompt_block);
         frame.render_widget(prompt_para, chunks[5]);
 
