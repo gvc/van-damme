@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Position},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use std::path::Path;
 use tui_input::Input;
@@ -293,9 +293,24 @@ impl App {
     pub fn draw(&self, frame: &mut Frame) {
         let area = frame.area();
 
-        // Centered form: 60 wide, 16 tall
+        // Centered form: 60 wide, dynamically sized vertically
         let form_width = 60u16.min(area.width.saturating_sub(2));
-        let form_height = 16u16.min(area.height.saturating_sub(2));
+
+        // Calculate prompt input height based on text wrapping
+        // Inner width = form_width - 2 (outer border) - 2 (input border)
+        let prompt_inner_width = form_width.saturating_sub(4) as usize;
+        let prompt_lines = if prompt_inner_width == 0 {
+            1
+        } else {
+            let text_len = self.prompt_input.value().len();
+            ((text_len as f64 / prompt_inner_width as f64).ceil() as u16).max(1)
+        };
+        // Prompt input box height = lines + 2 (borders), capped to leave room
+        let max_prompt_height = area.height.saturating_sub(16); // leave room for other fields
+        let prompt_box_height = (prompt_lines + 2).min(max_prompt_height).max(3);
+
+        // 2 (outer border) + 1+3+1+3+1 (labels+inputs) + prompt_box_height + 2 (hints)
+        let form_height = (13 + prompt_box_height).min(area.height.saturating_sub(2));
 
         let vertical = Layout::vertical([Constraint::Length(form_height)])
             .flex(Flex::Center)
@@ -323,13 +338,13 @@ impl App {
 
         // Layout inside form: label+input for title, directory, prompt, hint, error
         let chunks = Layout::vertical([
-            Constraint::Length(1), // Title label
-            Constraint::Length(3), // Title input
-            Constraint::Length(1), // Directory label
-            Constraint::Length(3), // Directory input
-            Constraint::Length(1), // Prompt label
-            Constraint::Length(3), // Prompt input
-            Constraint::Min(1),    // Hints + error
+            Constraint::Length(1),                // Title label
+            Constraint::Length(3),                // Title input
+            Constraint::Length(1),                // Directory label
+            Constraint::Length(3),                // Directory input
+            Constraint::Length(1),                // Prompt label
+            Constraint::Length(prompt_box_height), // Prompt input (grows with text)
+            Constraint::Min(1),                   // Hints + error
         ])
         .split(inner);
 
@@ -403,6 +418,7 @@ impl App {
         let prompt_inner = prompt_block.inner(chunks[5]);
         let prompt_para = Paragraph::new(self.prompt_input.value())
             .style(Style::default().fg(theme::TEXT))
+            .wrap(Wrap { trim: false })
             .block(prompt_block);
         frame.render_widget(prompt_para, chunks[5]);
 
@@ -434,8 +450,16 @@ impl App {
             InputField::Directory => (&self.dir_input, dir_inner),
             InputField::Prompt => (&self.prompt_input, prompt_inner),
         };
-        let cursor_x = cursor_area.x + cursor_input.visual_cursor() as u16;
-        let cursor_y = cursor_area.y;
+        let visual_cursor = cursor_input.visual_cursor() as u16;
+        let inner_width = cursor_area.width;
+        let (cursor_x, cursor_y) = if self.focused_field == InputField::Prompt && inner_width > 0 {
+            // Account for text wrapping in the prompt field
+            let line = visual_cursor / inner_width;
+            let col = visual_cursor % inner_width;
+            (cursor_area.x + col, cursor_area.y + line)
+        } else {
+            (cursor_area.x + visual_cursor, cursor_area.y)
+        };
         frame.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
 }
