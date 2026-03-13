@@ -47,7 +47,14 @@ pub fn session_exists(name: &str) -> Result<bool> {
 }
 
 /// Create a new tmux session with Claude and editor windows.
-pub fn create_session(name: &str, dir: &str) -> Result<TmuxSession> {
+/// If `prompt` is provided, it will be sent to Claude as an initial prompt.
+pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<TmuxSession> {
+    // Build the claude command, optionally with --prompt
+    let claude_cmd = match prompt {
+        Some(p) => format!("claude --worktree {name} -p {}", shell_escape(p)),
+        None => format!("claude --worktree {name}"),
+    };
+
     // Create detached session with claude window
     let status = Command::new("tmux")
         .args([
@@ -59,7 +66,7 @@ pub fn create_session(name: &str, dir: &str) -> Result<TmuxSession> {
             "claude",
             "-c",
             dir,
-            &format!("claude --worktree {name}"),
+            &claude_cmd,
         ])
         .status()?;
     if !status.success() {
@@ -122,6 +129,11 @@ pub fn create_session(name: &str, dir: &str) -> Result<TmuxSession> {
 /// Kill a tmux session by name.
 pub fn kill_session(name: &str) -> Result<()> {
     run_tmux(&["kill-session", "-t", name])
+}
+
+/// Escape a string for safe use as a single shell argument.
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn run_tmux(args: &[&str]) -> Result<()> {
@@ -187,6 +199,21 @@ mod tests {
     }
 
     #[test]
+    fn test_shell_escape_simple() {
+        assert_eq!(shell_escape("hello world"), "'hello world'");
+    }
+
+    #[test]
+    fn test_shell_escape_with_quotes() {
+        assert_eq!(shell_escape("it's a test"), "'it'\\''s a test'");
+    }
+
+    #[test]
+    fn test_shell_escape_empty() {
+        assert_eq!(shell_escape(""), "''");
+    }
+
+    #[test]
     #[ignore] // Requires tmux to be running
     fn test_session_exists_nonexistent() {
         let result = session_exists("nonexistent-session-12345");
@@ -205,7 +232,7 @@ mod tests {
             .args(["kill-session", "-t", name])
             .status();
 
-        let result = create_session(name, dir);
+        let result = create_session(name, dir, None);
         assert!(result.is_ok());
 
         let session = result.unwrap();

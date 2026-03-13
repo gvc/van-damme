@@ -66,9 +66,15 @@ fn main() -> Result<()> {
                         Screen::NewTask => {
                             let action = app.handle_key(key);
                             match action {
-                                Action::Submit { title, directory } => {
+                                Action::Submit {
+                                    title,
+                                    directory,
+                                    prompt,
+                                } => {
                                     tui::restore()?;
-                                    if let Err(e) = launch_session(&title, &directory) {
+                                    if let Err(e) =
+                                        launch_session(&title, &directory, prompt.as_deref())
+                                    {
                                         eprintln!("Error: {e}");
                                         std::process::exit(1);
                                     }
@@ -108,7 +114,7 @@ fn attach_session(session_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn launch_session(title: &str, directory: &str) -> Result<()> {
+fn launch_session(title: &str, directory: &str, prompt: Option<&str>) -> Result<()> {
     let session_name = tmux::sanitize_session_name(title);
 
     if session_name.is_empty() {
@@ -135,7 +141,7 @@ fn launch_session(title: &str, directory: &str) -> Result<()> {
         ));
     }
 
-    let tmux_session = tmux::create_session(&session_name, directory)?;
+    let tmux_session = tmux::create_session(&session_name, directory, prompt)?;
 
     session::add_session(
         tmux_session.session_id,
