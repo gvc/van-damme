@@ -20,6 +20,12 @@ enum Screen {
 }
 
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     color_eyre::install()?;
 
     let mut terminal = tui::init()?;
