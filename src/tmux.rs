@@ -1,10 +1,12 @@
 use color_eyre::{Result, eyre::eyre};
 use std::process::Command;
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct TmuxSession {
     pub session_name: String,
     pub session_id: String,
+    pub claude_session_id: String,
 }
 
 /// Sanitize a task title into a valid tmux session name.
@@ -62,12 +64,11 @@ pub fn create_session(
         .to_string_lossy()
         .to_string();
 
-    // The worktree lives at <dir>/.claude/worktrees/<name>
-    // Don't create it manually — Claude Code's --worktree flag handles that via git worktree add
-    let worktree_dir = format!("{abs_dir}/.claude/worktrees/{name}");
+    // Generate a UUID for this Claude session
+    let claude_session_id = Uuid::new_v4().to_string();
 
     // Build the claude command with optional extra args and prompt
-    let mut claude_cmd = format!("claude --worktree {name}");
+    let mut claude_cmd = format!("claude --worktree {name} --session-id {claude_session_id}");
     if let Some(args) = claude_args {
         claude_cmd.push(' ');
         claude_cmd.push_str(args);
@@ -95,18 +96,34 @@ pub fn create_session(
         return Err(eyre!("Failed to create tmux session '{name}'"));
     }
 
-    // Wait for Claude Code to create the git worktree before opening the editor window
-    let worktree_path = std::path::Path::new(&worktree_dir);
-    let max_wait = std::time::Duration::from_secs(10);
-    let poll_interval = std::time::Duration::from_millis(250);
-    let start = std::time::Instant::now();
-    while !worktree_path.join(".git").exists() {
-        if start.elapsed() >= max_wait {
-            // Fall back to project dir if worktree wasn't created in time
-            break;
-        }
-        std::thread::sleep(poll_interval);
+    // Capture session ID
+    let output = Command::new("tmux")
+        .args(["display-message", "-t", name, "-p", "#{session_id}"])
+        .output()?;
+    if !output.status.success() {
+        return Err(eyre!("Failed to get session ID for '{name}'"));
     }
+
+    let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    Ok(TmuxSession {
+        session_name: name.to_string(),
+        session_id,
+        claude_session_id,
+    })
+}
+
+/// Create the editor window + split pane for an existing tmux session.
+/// Called when Claude's SessionStart hook fires, so the worktree is guaranteed to exist.
+pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
+    let abs_dir = std::path::Path::new(directory)
+        .canonicalize()
+        .map_err(|e| eyre!("Cannot resolve directory '{directory}': {e}"))?
+        .to_string_lossy()
+        .to_string();
+
+    let worktree_dir = format!("{abs_dir}/.claude/worktrees/{session_name}");
+    let worktree_path = std::path::Path::new(&worktree_dir);
 
     // Use worktree dir if it exists, otherwise fall back to project dir
     let editor_dir = if worktree_path.exists() {
@@ -139,28 +156,35 @@ pub fn create_session(
     run_tmux(&[
         "send-keys",
         "-t",
-        &format!("{name}:editor"),
+        &format!("{session_name}:editor"),
         "vim .",
         "Enter",
     ])?;
 
-    // Select the first window (claude) as the default when attaching
-    run_tmux(&["select-window", "-t", &format!("{name}:claude")])?;
+    // Split editor window horizontally
+    run_tmux(&[
+        "split-window",
+        "-h",
+        "-t",
+        &format!("{session_name}:editor"),
+        "-c",
+        editor_dir,
+    ])?;
+
+    // Select the claude window as the default
+    run_tmux(&["select-window", "-t", &format!("{session_name}:claude")])?;
 
     // Capture session ID
     let output = Command::new("tmux")
         .args(["display-message", "-t", name, "-p", "#{session_id}"])
         .output()?;
     if !output.status.success() {
-        return Err(eyre!("Failed to get session ID for '{name}'"));
+        return Err(eyre!("Failed to get session ID for '{session_name}'"));
     }
 
     let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    Ok(TmuxSession {
-        session_name: name.to_string(),
-        session_id,
-    })
+    Ok(())
 }
 
 /// Switch the current tmux client to the given session.

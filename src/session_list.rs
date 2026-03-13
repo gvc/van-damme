@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
-use crate::session::SessionRecord;
+use crate::session::{SessionRecord, SessionState};
 use crate::theme;
 use crate::tmux;
 
@@ -211,7 +211,14 @@ impl SessionList {
                 .sessions
                 .iter()
                 .map(|s| {
+                    let icon_color = match s.state {
+                        SessionState::Working => theme::ORANGE_BRIGHT,
+                        SessionState::WaitingUser => Color::Yellow,
+                        SessionState::Idle => theme::GRAY_DIM,
+                    };
                     let line = Line::from(vec![
+                        Span::styled(s.state.icon(), Style::default().fg(icon_color)),
+                        Span::raw(" "),
                         Span::styled(
                             &s.tmux_session_name,
                             Style::default()
@@ -257,6 +264,7 @@ impl SessionList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionState;
     use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -276,6 +284,7 @@ mod tests {
                 claude_session_id: None,
                 directory: "/tmp/one".to_string(),
                 created_at: 1000,
+                state: SessionState::Idle,
             },
             SessionRecord {
                 tmux_session_id: "$2".to_string(),
@@ -283,6 +292,7 @@ mod tests {
                 claude_session_id: None,
                 directory: "/tmp/two".to_string(),
                 created_at: 2000,
+                state: SessionState::Idle,
             },
             SessionRecord {
                 tmux_session_id: "$3".to_string(),
@@ -290,6 +300,7 @@ mod tests {
                 claude_session_id: None,
                 directory: "/tmp/three".to_string(),
                 created_at: 3000,
+                state: SessionState::Idle,
             },
         ]
     }

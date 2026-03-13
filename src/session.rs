@@ -5,12 +5,45 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum SessionState {
+    Working,
+    WaitingUser,
+    Idle,
+}
+
+impl SessionState {
+    pub fn icon(&self) -> &'static str {
+        match self {
+            SessionState::Working => "⚙",
+            SessionState::WaitingUser => "⏳",
+            SessionState::Idle => "●",
+        }
+    }
+}
+
+impl std::fmt::Display for SessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionState::Working => write!(f, "Working"),
+            SessionState::WaitingUser => write!(f, "Waiting User"),
+            SessionState::Idle => write!(f, "Idle"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SessionRecord {
     pub tmux_session_id: String,
     pub tmux_session_name: String,
     pub claude_session_id: Option<String>,
     pub directory: String,
     pub created_at: u64,
+    #[serde(default = "default_state")]
+    pub state: SessionState,
+}
+
+fn default_state() -> SessionState {
+    SessionState::Idle
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -50,6 +83,40 @@ pub fn list_sessions() -> Result<Vec<SessionRecord>> {
     list_sessions_from(&path)
 }
 
+/// Find a session record by its claude session id.
+pub fn find_by_claude_session(claude_session_id: &str) -> Result<Option<SessionRecord>> {
+    let path = default_db_path()?;
+    let db = load_db_from(&path)?;
+    Ok(db
+        .sessions
+        .into_iter()
+        .find(|s| s.claude_session_id.as_deref() == Some(claude_session_id)))
+}
+
+/// Return up to `limit` most recently used unique directories, ordered by most recent first.
+pub fn recent_directories(limit: usize) -> Result<Vec<String>> {
+    let path = default_db_path()?;
+    recent_directories_from(&path, limit)
+}
+
+fn recent_directories_from(path: &Path, limit: usize) -> Result<Vec<String>> {
+    let db = load_db_from(path)?;
+    let mut sessions = db.sessions;
+    sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    let mut seen = std::collections::HashSet::new();
+    let mut dirs = Vec::new();
+    for s in sessions {
+        if seen.insert(s.directory.clone()) {
+            dirs.push(s.directory);
+            if dirs.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(dirs)
+}
+
 fn list_sessions_from(path: &Path) -> Result<Vec<SessionRecord>> {
     let db = load_db_from(path)?;
     Ok(db.sessions)
@@ -69,20 +136,44 @@ fn remove_session_from(path: &Path, tmux_session_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Update the state of a session by claude session id.
+pub fn update_state_by_claude_session(claude_session_id: &str, state: SessionState) -> Result<()> {
+    let path = default_db_path()?;
+    update_state_by_claude_session_at(&path, claude_session_id, state)
+}
+
+fn update_state_by_claude_session_at(
+    path: &Path,
+    claude_session_id: &str,
+    state: SessionState,
+) -> Result<()> {
+    let mut db = load_db_from(path)?;
+    let session = db
+        .sessions
+        .iter_mut()
+        .find(|s| s.claude_session_id.as_deref() == Some(claude_session_id))
+        .ok_or_else(|| eyre!("No session with claude_session_id '{}'", claude_session_id))?;
+    session.state = state;
+    save_db_to(path, &db)?;
+    Ok(())
+}
+
 /// Add a new session record and persist to disk.
 pub fn add_session(
     tmux_session_id: String,
     tmux_session_name: String,
+    claude_session_id: String,
     directory: String,
 ) -> Result<SessionRecord> {
     let path = default_db_path()?;
-    add_session_to(&path, tmux_session_id, tmux_session_name, directory)
+    add_session_to(&path, tmux_session_id, tmux_session_name, claude_session_id, directory)
 }
 
 fn add_session_to(
     path: &Path,
     tmux_session_id: String,
     tmux_session_name: String,
+    claude_session_id: String,
     directory: String,
 ) -> Result<SessionRecord> {
     let mut db = load_db_from(path)?;
@@ -94,9 +185,10 @@ fn add_session_to(
     let record = SessionRecord {
         tmux_session_id,
         tmux_session_name,
-        claude_session_id: None,
+        claude_session_id: Some(claude_session_id),
         directory,
         created_at,
+        state: SessionState::Idle,
     };
 
     db.sessions.push(record.clone());
@@ -122,6 +214,7 @@ mod tests {
             claude_session_id: None,
             directory: "/tmp".to_string(),
             created_at: 1700000000,
+            state: SessionState::Idle,
         };
         let json = serde_json::to_string(&record).unwrap();
         let deserialized: SessionRecord = serde_json::from_str(&json).unwrap();
@@ -137,6 +230,7 @@ mod tests {
                 claude_session_id: Some("sess-123".to_string()),
                 directory: "/home/user".to_string(),
                 created_at: 1700000000,
+                state: SessionState::Idle,
             }],
         };
         let json = serde_json::to_string_pretty(&db).unwrap();
@@ -159,13 +253,14 @@ mod tests {
             &path,
             "$1".to_string(),
             "test-session".to_string(),
+            "test-uuid-123".to_string(),
             "/tmp".to_string(),
         )
         .unwrap();
 
         assert_eq!(record.tmux_session_name, "test-session");
         assert!(record.created_at > 0);
-        assert!(record.claude_session_id.is_none());
+        assert_eq!(record.claude_session_id, Some("test-uuid-123".to_string()));
 
         // Verify persistence
         let db = load_db_from(&path).unwrap();
@@ -180,6 +275,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "first".to_string(),
+            "uuid-first".to_string(),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -187,6 +283,7 @@ mod tests {
             &path,
             "$2".to_string(),
             "second".to_string(),
+            "uuid-second".to_string(),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -202,6 +299,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "first".to_string(),
+            "uuid-first".to_string(),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -209,6 +307,7 @@ mod tests {
             &path,
             "$2".to_string(),
             "second".to_string(),
+            "uuid-second".to_string(),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -233,6 +332,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "first".to_string(),
+            "uuid-first".to_string(),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -240,6 +340,7 @@ mod tests {
             &path,
             "$2".to_string(),
             "second".to_string(),
+            "uuid-second".to_string(),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -258,6 +359,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "first".to_string(),
+            "uuid-first".to_string(),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -278,6 +380,7 @@ mod tests {
                 claude_session_id: None,
                 directory: "/home".to_string(),
                 created_at: 999,
+                state: SessionState::Working,
             }],
         };
         save_db_to(&path, &db).unwrap();
@@ -286,4 +389,166 @@ mod tests {
         assert_eq!(loaded.sessions[0], db.sessions[0]);
     }
 
+    #[test]
+    fn test_recent_directories_ordered_by_most_recent() {
+        let (_tmp, path) = temp_db_path();
+        let db = SessionDb {
+            sessions: vec![
+                SessionRecord {
+                    tmux_session_id: "$1".to_string(),
+                    tmux_session_name: "old".to_string(),
+                    claude_session_id: None,
+                    directory: "/old".to_string(),
+                    created_at: 100,
+                    state: SessionState::Idle,
+                },
+                SessionRecord {
+                    tmux_session_id: "$2".to_string(),
+                    tmux_session_name: "new".to_string(),
+                    claude_session_id: None,
+                    directory: "/new".to_string(),
+                    created_at: 200,
+                    state: SessionState::Idle,
+                },
+            ],
+        };
+        save_db_to(&path, &db).unwrap();
+        let dirs = recent_directories_from(&path, 5).unwrap();
+        assert_eq!(dirs, vec!["/new", "/old"]);
+    }
+
+    #[test]
+    fn test_recent_directories_deduplicates() {
+        let (_tmp, path) = temp_db_path();
+        let db = SessionDb {
+            sessions: vec![
+                SessionRecord {
+                    tmux_session_id: "$1".to_string(),
+                    tmux_session_name: "a".to_string(),
+                    claude_session_id: None,
+                    directory: "/tmp".to_string(),
+                    created_at: 100,
+                    state: SessionState::Idle,
+                },
+                SessionRecord {
+                    tmux_session_id: "$2".to_string(),
+                    tmux_session_name: "b".to_string(),
+                    claude_session_id: None,
+                    directory: "/tmp".to_string(),
+                    created_at: 200,
+                    state: SessionState::Idle,
+                },
+                SessionRecord {
+                    tmux_session_id: "$3".to_string(),
+                    tmux_session_name: "c".to_string(),
+                    claude_session_id: None,
+                    directory: "/home".to_string(),
+                    created_at: 300,
+                    state: SessionState::Idle,
+                },
+            ],
+        };
+        save_db_to(&path, &db).unwrap();
+        let dirs = recent_directories_from(&path, 5).unwrap();
+        assert_eq!(dirs, vec!["/home", "/tmp"]);
+    }
+
+    #[test]
+    fn test_recent_directories_respects_limit() {
+        let (_tmp, path) = temp_db_path();
+        let db = SessionDb {
+            sessions: vec![
+                SessionRecord {
+                    tmux_session_id: "$1".to_string(),
+                    tmux_session_name: "a".to_string(),
+                    claude_session_id: None,
+                    directory: "/a".to_string(),
+                    created_at: 100,
+                    state: SessionState::Idle,
+                },
+                SessionRecord {
+                    tmux_session_id: "$2".to_string(),
+                    tmux_session_name: "b".to_string(),
+                    claude_session_id: None,
+                    directory: "/b".to_string(),
+                    created_at: 200,
+                    state: SessionState::Idle,
+                },
+                SessionRecord {
+                    tmux_session_id: "$3".to_string(),
+                    tmux_session_name: "c".to_string(),
+                    claude_session_id: None,
+                    directory: "/c".to_string(),
+                    created_at: 300,
+                    state: SessionState::Idle,
+                },
+            ],
+        };
+        save_db_to(&path, &db).unwrap();
+        let dirs = recent_directories_from(&path, 2).unwrap();
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs, vec!["/c", "/b"]);
+    }
+
+    #[test]
+    fn test_recent_directories_empty_db() {
+        let (_tmp, path) = temp_db_path();
+        let dirs = recent_directories_from(&path, 5).unwrap();
+        assert!(dirs.is_empty());
+    }
+
+    #[test]
+    fn test_update_session_state() {
+        let (_tmp, path) = temp_db_path();
+        add_session_to(
+            &path,
+            "$1".to_string(),
+            "my-session".to_string(),
+            "uuid-1".to_string(),
+            "/tmp".to_string(),
+        )
+        .unwrap();
+
+        // Default state is Idle
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions[0].state, SessionState::Idle);
+
+        // Update to Working (lookup by claude_session_id)
+        update_state_by_claude_session_at(&path, "uuid-1", SessionState::Working).unwrap();
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions[0].state, SessionState::Working);
+
+        // Update to WaitingUser
+        update_state_by_claude_session_at(&path, "uuid-1", SessionState::WaitingUser).unwrap();
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions[0].state, SessionState::WaitingUser);
+    }
+
+    #[test]
+    fn test_update_session_state_not_found() {
+        let (_tmp, path) = temp_db_path();
+        let result = update_state_by_claude_session_at(&path, "nonexistent", SessionState::Working);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_session_state_display() {
+        assert_eq!(SessionState::Working.to_string(), "Working");
+        assert_eq!(SessionState::WaitingUser.to_string(), "Waiting User");
+        assert_eq!(SessionState::Idle.to_string(), "Idle");
+    }
+
+    #[test]
+    fn test_state_defaults_to_idle_on_deserialize() {
+        // Simulate a legacy record without a state field
+        let json = r#"{
+            "tmux_session_id": "$1",
+            "tmux_session_name": "legacy",
+            "claude_session_id": null,
+            "directory": "/tmp",
+            "created_at": 100
+        }"#;
+        let record: SessionRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.state, SessionState::Idle);
+    }
 }
