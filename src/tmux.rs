@@ -49,20 +49,24 @@ pub fn session_exists(name: &str) -> Result<bool> {
 /// Create a new tmux session with Claude and editor windows.
 /// If `prompt` is provided, it will be sent to Claude as an initial prompt.
 pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<TmuxSession> {
-    // The worktree lives at <dir>/.claude/worktrees/<name>
-    let worktree_dir = format!("{dir}/.claude/worktrees/{name}");
+    // Canonicalize the base directory so tmux gets an absolute, resolved path
+    let abs_dir = std::path::Path::new(dir)
+        .canonicalize()
+        .map_err(|e| eyre!("Cannot resolve directory '{dir}': {e}"))?
+        .to_string_lossy()
+        .to_string();
 
-    // Ensure the worktree directory exists before claude starts
-    std::fs::create_dir_all(&worktree_dir).ok();
+    // The worktree lives at <dir>/.claude/worktrees/<name>
+    // Don't create it manually — Claude Code's --worktree flag handles that via git worktree add
+    let worktree_dir = format!("{abs_dir}/.claude/worktrees/{name}");
 
     // Build the claude command, optionally with an initial prompt
-    // Start in the worktree dir so Claude Code's shell pwd matches the worktree
     let claude_cmd = match prompt {
         Some(p) => format!("claude --worktree {name} {}", shell_escape(p)),
         None => format!("claude --worktree {name}"),
     };
 
-    // Create detached session with claude window, starting in the worktree directory
+    // Create detached session with claude window, starting in the project directory
     let status = Command::new("tmux")
         .args([
             "new-session",
@@ -72,7 +76,7 @@ pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<Tmu
             "-n",
             "claude",
             "-c",
-            &worktree_dir,
+            &abs_dir,
             &claude_cmd,
         ])
         .status()?;
@@ -80,7 +84,27 @@ pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<Tmu
         return Err(eyre!("Failed to create tmux session '{name}'"));
     }
 
-    // Create editor window in the worktree directory
+    // Wait for Claude Code to create the git worktree before opening the editor window
+    let worktree_path = std::path::Path::new(&worktree_dir);
+    let max_wait = std::time::Duration::from_secs(10);
+    let poll_interval = std::time::Duration::from_millis(250);
+    let start = std::time::Instant::now();
+    while !worktree_path.join(".git").exists() {
+        if start.elapsed() >= max_wait {
+            // Fall back to project dir if worktree wasn't created in time
+            break;
+        }
+        std::thread::sleep(poll_interval);
+    }
+
+    // Use worktree dir if it exists, otherwise fall back to project dir
+    let editor_dir = if worktree_path.exists() {
+        &worktree_dir
+    } else {
+        &abs_dir
+    };
+
+    // Create editor window
     run_tmux(&[
         "new-window",
         "-t",
@@ -88,7 +112,7 @@ pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<Tmu
         "-n",
         "editor",
         "-c",
-        &worktree_dir,
+        editor_dir,
     ])?;
 
     // Open vim in editor window
@@ -107,7 +131,7 @@ pub fn create_session(name: &str, dir: &str, prompt: Option<&str>) -> Result<Tmu
         "-t",
         &format!("{name}:editor"),
         "-c",
-        &worktree_dir,
+        editor_dir,
     ])?;
 
     // Select the first window (claude) as the default when attaching
