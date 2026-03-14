@@ -119,7 +119,11 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            Event::Tick => {}
+            Event::Tick => {
+                if matches!(screen, Screen::SessionList) {
+                    session_list.refresh_states();
+                }
+            }
         }
     }
 
