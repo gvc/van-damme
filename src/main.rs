@@ -96,6 +96,8 @@ fn main() -> Result<()> {
                                     prompt,
                                     claude_args,
                                 } => {
+                                    let session_name =
+                                        tmux::sanitize_session_name(&title);
                                     if let Err(e) = launch_session(
                                         &title,
                                         &directory,
@@ -105,6 +107,7 @@ fn main() -> Result<()> {
                                         app.error_message = Some(format!("{e}"));
                                     } else {
                                         session_list.refresh();
+                                        session_list.select_by_name(&session_name);
                                         screen = Screen::SessionList;
                                     }
                                 }
