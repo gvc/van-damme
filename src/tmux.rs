@@ -1,12 +1,9 @@
 use color_eyre::{Result, eyre::eyre};
 use std::process::Command;
-use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct TmuxSession {
-    pub session_name: String,
     pub session_id: String,
-    pub claude_session_id: String,
 }
 
 /// Sanitize a task title into a valid tmux session name.
@@ -51,11 +48,13 @@ pub fn session_exists(name: &str) -> Result<bool> {
 /// Create a new tmux session with Claude and editor windows.
 /// If `prompt` is provided, it will be sent to Claude as an initial prompt.
 /// If `claude_args` is provided, they are inserted before the prompt on the CLI.
+/// The `claude_session_id` is the pre-generated UUID used for `--session-id`.
 pub fn create_session(
     name: &str,
     dir: &str,
     prompt: Option<&str>,
     claude_args: Option<&str>,
+    claude_session_id: &str,
 ) -> Result<TmuxSession> {
     // Canonicalize the base directory so tmux gets an absolute, resolved path
     let abs_dir = std::path::Path::new(dir)
@@ -63,9 +62,6 @@ pub fn create_session(
         .map_err(|e| eyre!("Cannot resolve directory '{dir}': {e}"))?
         .to_string_lossy()
         .to_string();
-
-    // Generate a UUID for this Claude session
-    let claude_session_id = Uuid::new_v4().to_string();
 
     // Build the claude command with optional extra args and prompt
     let mut claude_cmd = format!("claude --worktree {name} --session-id {claude_session_id}");
@@ -106,11 +102,7 @@ pub fn create_session(
 
     let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    Ok(TmuxSession {
-        session_name: name.to_string(),
-        session_id,
-        claude_session_id,
-    })
+    Ok(TmuxSession { session_id })
 }
 
 /// Create the editor window + split pane for an existing tmux session.
@@ -137,20 +129,24 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
         "split-window",
         "-h",
         "-t",
-        &format!("{name}:claude"),
+        &format!("{session_name}:claude"),
         "-c",
         editor_dir,
     ])?;
 
     // Keep focus on the claude pane (left)
-    run_tmux(&[
-        "select-pane",
-        "-t",
-        &format!("{name}:claude.0"),
-    ])?;
+    run_tmux(&["select-pane", "-t", &format!("{session_name}:claude.0")])?;
 
     // Create editor window with vim
-    run_tmux(&["new-window", "-t", name, "-n", "editor", "-c", editor_dir])?;
+    run_tmux(&[
+        "new-window",
+        "-t",
+        session_name,
+        "-n",
+        "editor",
+        "-c",
+        editor_dir,
+    ])?;
 
     // Open vim in editor window
     run_tmux(&[
@@ -173,16 +169,6 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
 
     // Select the claude window as the default
     run_tmux(&["select-window", "-t", &format!("{session_name}:claude")])?;
-
-    // Capture session ID
-    let output = Command::new("tmux")
-        .args(["display-message", "-t", name, "-p", "#{session_id}"])
-        .output()?;
-    if !output.status.success() {
-        return Err(eyre!("Failed to get session ID for '{session_name}'"));
-    }
-
-    let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     Ok(())
 }
@@ -336,11 +322,10 @@ mod tests {
             .args(["kill-session", "-t", name])
             .status();
 
-        let result = create_session(name, dir, None, None);
+        let result = create_session(name, dir, None, None, "test-uuid-123");
         assert!(result.is_ok());
 
         let session = result.unwrap();
-        assert_eq!(session.session_name, name);
         assert!(!session.session_id.is_empty());
 
         // Verify it exists

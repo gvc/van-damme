@@ -48,18 +48,51 @@ impl SessionList {
                     .filter(|s| tmux::session_exists(&s.tmux_session_name).unwrap_or(false))
                     .collect();
                 self.sessions = alive;
-                // Adjust selection
-                if self.sessions.is_empty() {
-                    self.list_state.select(None);
-                } else if let Some(i) = self.list_state.selected()
-                    && i >= self.sessions.len()
-                {
-                    self.list_state.select(Some(self.sessions.len() - 1));
-                }
+                self.clamp_selection();
             }
             Err(e) => {
                 self.status_message = Some(format!("Error loading sessions: {e}"));
             }
+        }
+    }
+
+    /// Lightweight refresh: re-reads session states from the DB without
+    /// spawning tmux processes to check liveness. Suitable for calling on tick.
+    pub fn refresh_states(&mut self) {
+        let Ok(db_sessions) = crate::session::list_sessions() else {
+            return;
+        };
+        for session in &mut self.sessions {
+            if let Some(updated) = db_sessions
+                .iter()
+                .find(|s| s.tmux_session_name == session.tmux_session_name)
+            {
+                session.state = updated.state.clone();
+            }
+        }
+    }
+
+    /// Select a session by tmux name. Falls back to first item if not found.
+    pub fn select_by_name(&mut self, name: &str) {
+        let idx = self
+            .sessions
+            .iter()
+            .position(|s| s.tmux_session_name == name)
+            .unwrap_or(0);
+        if !self.sessions.is_empty() {
+            self.list_state.select(Some(idx));
+        }
+    }
+
+    fn clamp_selection(&mut self) {
+        if self.sessions.is_empty() {
+            self.list_state.select(None);
+        } else if self.list_state.selected().is_none() {
+            self.list_state.select(Some(0));
+        } else if let Some(i) = self.list_state.selected()
+            && i >= self.sessions.len()
+        {
+            self.list_state.select(Some(self.sessions.len() - 1));
         }
     }
 
@@ -395,5 +428,27 @@ mod tests {
         assert_eq!(list.list_state.selected(), None);
         list.handle_key(key(KeyCode::Up));
         assert_eq!(list.list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_select_by_name_finds_session() {
+        let mut list = SessionList::new(sample_sessions());
+        list.select_by_name("task-three");
+        assert_eq!(list.list_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn test_select_by_name_falls_back_to_first() {
+        let mut list = SessionList::new(sample_sessions());
+        list.select_by_name("nonexistent");
+        assert_eq!(list.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_clamp_selection_selects_first_when_none() {
+        let mut list = SessionList::new(sample_sessions());
+        list.list_state.select(None);
+        list.clamp_selection();
+        assert_eq!(list.list_state.selected(), Some(0));
     }
 }
