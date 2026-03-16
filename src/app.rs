@@ -167,6 +167,7 @@ pub struct App {
     pub recent_dirs: Vec<String>,
     pub recent_dir_selected: Option<usize>,
     pub show_recent_dirs: bool,
+    pub show_advanced: bool,
 }
 
 impl App {
@@ -196,6 +197,7 @@ impl App {
             recent_dirs,
             recent_dir_selected: None,
             show_recent_dirs: false,
+            show_advanced: false,
         }
     }
 
@@ -207,6 +209,25 @@ impl App {
         // Handle recent dirs dropdown navigation
         if self.show_recent_dirs {
             return self.handle_recent_dirs_key(key);
+        }
+
+        // Ctrl+A toggles advanced settings
+        if key.code == KeyCode::Char('a')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+        {
+            self.show_advanced = !self.show_advanced;
+            // If hiding advanced and focused on an advanced field, move to Prompt
+            if !self.show_advanced
+                && matches!(
+                    self.focused_field,
+                    InputField::GitMode | InputField::BranchName | InputField::ClaudeArgs
+                )
+            {
+                self.focused_field = InputField::Prompt;
+            }
+            return Action::None;
         }
 
         match key.code {
@@ -372,7 +393,13 @@ impl App {
     fn next_field(&mut self) {
         self.focused_field = match self.focused_field {
             InputField::Title => InputField::Directory,
-            InputField::Directory => InputField::GitMode,
+            InputField::Directory => {
+                if self.show_advanced {
+                    InputField::GitMode
+                } else {
+                    InputField::Prompt
+                }
+            }
             InputField::GitMode => {
                 if self.git_mode == GitMode::Branch {
                     InputField::BranchName
@@ -381,22 +408,38 @@ impl App {
                 }
             }
             InputField::BranchName => InputField::Prompt,
-            InputField::Prompt => InputField::ClaudeArgs,
+            InputField::Prompt => {
+                if self.show_advanced {
+                    InputField::ClaudeArgs
+                } else {
+                    InputField::Title
+                }
+            }
             InputField::ClaudeArgs => InputField::Title,
         };
     }
 
     fn prev_field(&mut self) {
         self.focused_field = match self.focused_field {
-            InputField::Title => InputField::ClaudeArgs,
+            InputField::Title => {
+                if self.show_advanced {
+                    InputField::ClaudeArgs
+                } else {
+                    InputField::Prompt
+                }
+            }
             InputField::Directory => InputField::Title,
             InputField::GitMode => InputField::Directory,
             InputField::BranchName => InputField::GitMode,
             InputField::Prompt => {
-                if self.git_mode == GitMode::Branch {
-                    InputField::BranchName
+                if self.show_advanced {
+                    if self.git_mode == GitMode::Branch {
+                        InputField::BranchName
+                    } else {
+                        InputField::GitMode
+                    }
                 } else {
-                    InputField::GitMode
+                    InputField::Directory
                 }
             }
             InputField::ClaudeArgs => InputField::Prompt,
@@ -478,16 +521,22 @@ impl App {
         let max_prompt_height = area.height.saturating_sub(22); // leave room for other fields
         let prompt_box_height = (prompt_lines + 2).min(max_prompt_height).max(3);
 
-        // Extra height for branch name field when in Branch mode
-        let branch_extra = if self.git_mode == GitMode::Branch {
-            4
+        // Extra height for advanced fields
+        let advanced_extra = if self.show_advanced {
+            let branch_extra = if self.git_mode == GitMode::Branch {
+                4
+            } else {
+                0
+            };
+            2 + branch_extra + 4 // git mode (label + selector) + branch (conditional) + args (label + input)
         } else {
             0
-        }; // label + input
+        };
 
-        // 2 (outer border) + fields + 1 (hints)
+        // Base: 2 (outer border) + 1 (title label) + 3 (title input) + 1 (dir label) + 3 (dir input)
+        //       + 1 (prompt label) + prompt_box_height + 1 (hints) + 1 (tab bar) = 11 + prompt_box_height + 1
         let form_height =
-            (18 + branch_extra + prompt_box_height).min(area.height.saturating_sub(2));
+            (13 + advanced_extra as u16 + prompt_box_height).min(area.height.saturating_sub(2));
         // +1 for error line below the box
         let total_height = form_height + 1;
 
@@ -522,48 +571,104 @@ impl App {
         let inner = outer_block.inner(form_area);
         frame.render_widget(outer_block, form_area);
 
-        // Build layout constraints dynamically based on git mode
+        // Build layout constraints dynamically based on mode
         let mut constraints = vec![
+            Constraint::Length(1), // Tab bar
             Constraint::Length(1), // Title label
             Constraint::Length(3), // Title input
             Constraint::Length(1), // Directory label
             Constraint::Length(3), // Directory input
-            Constraint::Length(1), // Git mode label
-            Constraint::Length(1), // Git mode selector
         ];
-        if self.git_mode == GitMode::Branch {
-            constraints.push(Constraint::Length(1)); // Branch name label
-            constraints.push(Constraint::Length(3)); // Branch name input
+        if self.show_advanced {
+            constraints.push(Constraint::Length(1)); // Git mode label
+            constraints.push(Constraint::Length(1)); // Git mode selector
+            if self.git_mode == GitMode::Branch {
+                constraints.push(Constraint::Length(1)); // Branch name label
+                constraints.push(Constraint::Length(3)); // Branch name input
+            }
         }
         constraints.extend_from_slice(&[
             Constraint::Length(1),                 // Prompt label
             Constraint::Length(prompt_box_height), // Prompt input
-            Constraint::Length(1),                 // Claude args label
-            Constraint::Length(3),                 // Claude args input
-            Constraint::Min(1),                    // Hints
         ]);
+        if self.show_advanced {
+            constraints.push(Constraint::Length(1)); // Claude args label
+            constraints.push(Constraint::Length(3)); // Claude args input
+        }
+        constraints.push(Constraint::Min(1)); // Hints
         let chunks = Layout::vertical(constraints).split(inner);
 
         // Track chunk indices dynamically
-        let title_label_idx = 0;
-        let title_input_idx = 1;
-        let dir_label_idx = 2;
-        let dir_input_idx = 3;
-        let git_mode_label_idx = 4;
-        let git_mode_selector_idx = 5;
-        let (
-            branch_label_idx,
-            branch_input_idx,
-            prompt_label_idx,
-            prompt_input_idx,
-            args_label_idx,
-            args_input_idx,
-            hints_idx,
-        ) = if self.git_mode == GitMode::Branch {
-            (Some(6), Some(7), 8, 9, 10, 11, 12)
+        let tab_bar_idx = 0;
+        let title_label_idx = 1;
+        let title_input_idx = 2;
+        let dir_label_idx = 3;
+        let dir_input_idx = 4;
+        let mut next_idx = 5;
+
+        let git_mode_label_idx;
+        let git_mode_selector_idx;
+        let branch_label_idx;
+        let branch_input_idx;
+        if self.show_advanced {
+            git_mode_label_idx = Some(next_idx);
+            next_idx += 1;
+            git_mode_selector_idx = Some(next_idx);
+            next_idx += 1;
+            if self.git_mode == GitMode::Branch {
+                branch_label_idx = Some(next_idx);
+                next_idx += 1;
+                branch_input_idx = Some(next_idx);
+                next_idx += 1;
+            } else {
+                branch_label_idx = None;
+                branch_input_idx = None;
+            }
         } else {
-            (None, None, 6, 7, 8, 9, 10)
+            git_mode_label_idx = None;
+            git_mode_selector_idx = None;
+            branch_label_idx = None;
+            branch_input_idx = None;
+        }
+
+        let prompt_label_idx = next_idx;
+        next_idx += 1;
+        let prompt_input_idx = next_idx;
+        next_idx += 1;
+
+        let args_label_idx;
+        let args_input_idx;
+        if self.show_advanced {
+            args_label_idx = Some(next_idx);
+            next_idx += 1;
+            args_input_idx = Some(next_idx);
+            next_idx += 1;
+        } else {
+            args_label_idx = None;
+            args_input_idx = None;
+        }
+        let hints_idx = next_idx;
+
+        // Tab bar
+        let (basic_style, advanced_style) = if self.show_advanced {
+            (
+                Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
+                Style::default().fg(theme::BG).bg(theme::ORANGE_BRIGHT),
+            )
+        } else {
+            (
+                Style::default().fg(theme::BG).bg(theme::ORANGE_BRIGHT),
+                Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
+            )
         };
+        let tab_line = Line::from(vec![
+            Span::styled(" Basic ", basic_style),
+            Span::styled("  ", Style::default().bg(theme::BG)),
+            Span::styled(" Advanced ", advanced_style),
+            Span::styled("  (Ctrl+A to toggle)", Style::default().fg(theme::GRAY_DIM).bg(theme::BG)),
+        ]);
+        let tab_para = Paragraph::new(tab_line).style(Style::default().bg(theme::BG));
+        frame.render_widget(tab_para, chunks[tab_bar_idx]);
 
         // Title label
         let title_label =
@@ -617,63 +722,69 @@ impl App {
         let dir_para = Paragraph::new(dir_line).block(dir_block);
         frame.render_widget(dir_para, chunks[dir_input_idx]);
 
-        // Git mode label
-        let git_mode_label =
-            Paragraph::new("Git mode:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
-        frame.render_widget(git_mode_label, chunks[git_mode_label_idx]);
-
-        // Git mode selector — inline toggle
-        let git_mode_focused = self.focused_field == InputField::GitMode;
-        let (worktree_style, branch_style) = match self.git_mode {
-            GitMode::Worktree => (
-                Style::default().fg(theme::BG).bg(theme::ORANGE_BRIGHT),
-                Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
-            ),
-            GitMode::Branch => (
-                Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
-                Style::default().fg(theme::BG).bg(theme::ORANGE_BRIGHT),
-            ),
-        };
-        let selector_line = Line::from(vec![
-            Span::styled(
-                if git_mode_focused { "< " } else { "  " },
-                Style::default().fg(theme::GRAY_DIM),
-            ),
-            Span::styled(" Worktree ", worktree_style),
-            Span::styled("  ", Style::default().fg(theme::TEXT).bg(theme::BG)),
-            Span::styled(" Branch ", branch_style),
-            Span::styled(
-                if git_mode_focused { " >" } else { "  " },
-                Style::default().fg(theme::GRAY_DIM),
-            ),
-        ]);
-        let selector_para = Paragraph::new(selector_line).style(Style::default().bg(theme::BG));
-        frame.render_widget(selector_para, chunks[git_mode_selector_idx]);
-
-        // Branch name (only when Branch mode)
+        // Git mode + Branch name (only when advanced is shown)
         let mut branch_inner = None;
-        if self.git_mode == GitMode::Branch
-            && let (Some(bl_idx), Some(bi_idx)) = (branch_label_idx, branch_input_idx)
-        {
-            let branch_label = Paragraph::new("Branch name:")
-                .style(Style::default().fg(theme::TEXT).bg(theme::BG));
-            frame.render_widget(branch_label, chunks[bl_idx]);
+        if self.show_advanced {
+            if let (Some(gml_idx), Some(gms_idx)) = (git_mode_label_idx, git_mode_selector_idx) {
+                // Git mode label
+                let git_mode_label = Paragraph::new("Git mode:")
+                    .style(Style::default().fg(theme::TEXT).bg(theme::BG));
+                frame.render_widget(git_mode_label, chunks[gml_idx]);
 
-            let branch_border_color = if self.focused_field == InputField::BranchName {
-                theme::ORANGE_BRIGHT
-            } else {
-                theme::GRAY
-            };
-            let branch_block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(branch_border_color))
-                .style(Style::default().bg(theme::BG));
-            let bi = branch_block.inner(chunks[bi_idx]);
-            branch_inner = Some(bi);
-            let branch_para = Paragraph::new(self.branch_name_input.value())
-                .style(Style::default().fg(theme::TEXT))
-                .block(branch_block);
-            frame.render_widget(branch_para, chunks[bi_idx]);
+                // Git mode selector — inline toggle
+                let git_mode_focused = self.focused_field == InputField::GitMode;
+                let (worktree_style, branch_style) = match self.git_mode {
+                    GitMode::Worktree => (
+                        Style::default().fg(theme::BG).bg(theme::ORANGE_BRIGHT),
+                        Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
+                    ),
+                    GitMode::Branch => (
+                        Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
+                        Style::default().fg(theme::BG).bg(theme::ORANGE_BRIGHT),
+                    ),
+                };
+                let selector_line = Line::from(vec![
+                    Span::styled(
+                        if git_mode_focused { "< " } else { "  " },
+                        Style::default().fg(theme::GRAY_DIM),
+                    ),
+                    Span::styled(" Worktree ", worktree_style),
+                    Span::styled("  ", Style::default().fg(theme::TEXT).bg(theme::BG)),
+                    Span::styled(" Branch ", branch_style),
+                    Span::styled(
+                        if git_mode_focused { " >" } else { "  " },
+                        Style::default().fg(theme::GRAY_DIM),
+                    ),
+                ]);
+                let selector_para =
+                    Paragraph::new(selector_line).style(Style::default().bg(theme::BG));
+                frame.render_widget(selector_para, chunks[gms_idx]);
+            }
+
+            // Branch name (only when Branch mode)
+            if self.git_mode == GitMode::Branch
+                && let (Some(bl_idx), Some(bi_idx)) = (branch_label_idx, branch_input_idx)
+            {
+                let branch_label = Paragraph::new("Branch name:")
+                    .style(Style::default().fg(theme::TEXT).bg(theme::BG));
+                frame.render_widget(branch_label, chunks[bl_idx]);
+
+                let branch_border_color = if self.focused_field == InputField::BranchName {
+                    theme::ORANGE_BRIGHT
+                } else {
+                    theme::GRAY
+                };
+                let branch_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(branch_border_color))
+                    .style(Style::default().bg(theme::BG));
+                let bi = branch_block.inner(chunks[bi_idx]);
+                branch_inner = Some(bi);
+                let branch_para = Paragraph::new(self.branch_name_input.value())
+                    .style(Style::default().fg(theme::TEXT))
+                    .block(branch_block);
+                frame.render_widget(branch_para, chunks[bi_idx]);
+            }
         }
 
         // Prompt label
@@ -699,26 +810,30 @@ impl App {
             .block(prompt_block);
         frame.render_widget(prompt_para, chunks[prompt_input_idx]);
 
-        // Claude args label
-        let args_label = Paragraph::new("Additional CLI args (optional):")
-            .style(Style::default().fg(theme::TEXT).bg(theme::BG));
-        frame.render_widget(args_label, chunks[args_label_idx]);
+        // Claude args (only when advanced is shown)
+        let mut args_inner = None;
+        if self.show_advanced
+            && let (Some(al_idx), Some(ai_idx)) = (args_label_idx, args_input_idx)
+        {
+            let args_label = Paragraph::new("Additional CLI args (optional):")
+                .style(Style::default().fg(theme::TEXT).bg(theme::BG));
+            frame.render_widget(args_label, chunks[al_idx]);
 
-        // Claude args input
-        let args_border_color = if self.focused_field == InputField::ClaudeArgs {
-            theme::ORANGE_BRIGHT
-        } else {
-            theme::GRAY
-        };
-        let args_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(args_border_color))
-            .style(Style::default().bg(theme::BG));
-        let args_inner = args_block.inner(chunks[args_input_idx]);
-        let args_para = Paragraph::new(self.claude_args_input.value())
-            .style(Style::default().fg(theme::TEXT))
-            .block(args_block);
-        frame.render_widget(args_para, chunks[args_input_idx]);
+            let args_border_color = if self.focused_field == InputField::ClaudeArgs {
+                theme::ORANGE_BRIGHT
+            } else {
+                theme::GRAY
+            };
+            let args_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(args_border_color))
+                .style(Style::default().bg(theme::BG));
+            args_inner = Some(args_block.inner(chunks[ai_idx]));
+            let args_para = Paragraph::new(self.claude_args_input.value())
+                .style(Style::default().fg(theme::TEXT))
+                .block(args_block);
+            frame.render_widget(args_para, chunks[ai_idx]);
+        }
 
         // Recent directories dropdown (rendered over other content)
         if self.show_recent_dirs && !self.recent_dirs.is_empty() {
@@ -758,17 +873,19 @@ impl App {
         let hint_text = if self.show_recent_dirs {
             "↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::GitMode {
-            "←/→: toggle  |  Tab: next field  |  Enter: submit  |  Esc: quit"
+            "←/→: toggle  |  Tab: next  |  Ctrl+A: basic  |  Enter: submit  |  Esc: quit"
         } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
             if !self.recent_dirs.is_empty() {
-                "→: complete  |  Ctrl+D: recent dirs  |  Tab: next  |  Enter: submit  |  Esc: quit"
+                "→: complete  |  Ctrl+D: recent dirs  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"
             } else {
-                "→: complete path  |  Tab: next field  |  Enter: submit  |  Esc: quit"
+                "→: complete  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"
             }
         } else if self.focused_field == InputField::Directory && !self.recent_dirs.is_empty() {
-            "Ctrl+D: recent dirs  |  Tab: next field  |  Enter: submit  |  Esc: quit"
+            "Ctrl+D: recent dirs  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"
+        } else if self.show_advanced {
+            "Tab: next  |  Ctrl+A: basic  |  Enter: submit  |  Esc: quit"
         } else {
-            "Tab: next field  |  Enter: submit  |  Esc: quit"
+            "Tab: next  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"
         };
         let hints = Paragraph::new(Line::from(Span::styled(
             hint_text,
@@ -799,7 +916,9 @@ impl App {
                         (&self.branch_name_input, branch_inner.unwrap_or(title_inner))
                     }
                     InputField::Prompt => (&self.prompt_input, prompt_inner),
-                    InputField::ClaudeArgs => (&self.claude_args_input, args_inner),
+                    InputField::ClaudeArgs => {
+                        (&self.claude_args_input, args_inner.unwrap_or(title_inner))
+                    }
                     InputField::GitMode => unreachable!(),
                 };
                 let visual_cursor = cursor_input.visual_cursor() as u16;
@@ -849,8 +968,24 @@ mod tests {
     }
 
     #[test]
-    fn test_tab_cycles_all_fields() {
+    fn test_tab_cycles_basic_fields() {
         let mut app = App::new();
+        assert_eq!(app.focused_field, InputField::Title);
+
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Directory);
+
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Prompt);
+
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Title);
+    }
+
+    #[test]
+    fn test_tab_cycles_all_fields_advanced() {
+        let mut app = App::new();
+        app.show_advanced = true;
         assert_eq!(app.focused_field, InputField::Title);
 
         app.handle_key(key(KeyCode::Tab));
@@ -945,8 +1080,26 @@ mod tests {
     }
 
     #[test]
-    fn test_up_down_cycles_focus() {
+    fn test_up_down_cycles_basic_focus() {
         let mut app = App::new();
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.focused_field, InputField::Directory);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.focused_field, InputField::Prompt);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.focused_field, InputField::Title);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.focused_field, InputField::Prompt);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.focused_field, InputField::Directory);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.focused_field, InputField::Title);
+    }
+
+    #[test]
+    fn test_up_down_cycles_advanced_focus() {
+        let mut app = App::new();
+        app.show_advanced = true;
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.focused_field, InputField::Directory);
         app.handle_key(key(KeyCode::Down));
@@ -973,7 +1126,6 @@ mod tests {
         }
         // Skip to prompt field
         app.handle_key(key(KeyCode::Tab)); // -> Directory
-        app.handle_key(key(KeyCode::Tab)); // -> GitMode
         app.handle_key(key(KeyCode::Tab)); // -> Prompt
         for ch in "fix the bug".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
@@ -998,6 +1150,7 @@ mod tests {
     #[test]
     fn test_submit_with_claude_args() {
         let mut app = App::new();
+        app.show_advanced = true;
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
@@ -1132,8 +1285,17 @@ mod tests {
     }
 
     #[test]
-    fn test_tab_on_directory_moves_to_git_mode() {
+    fn test_tab_on_directory_moves_to_prompt_in_basic() {
         let mut app = App::new();
+        app.focused_field = InputField::Directory;
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Prompt);
+    }
+
+    #[test]
+    fn test_tab_on_directory_moves_to_git_mode_in_advanced() {
+        let mut app = App::new();
+        app.show_advanced = true;
         app.focused_field = InputField::Directory;
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::GitMode);
@@ -1264,6 +1426,7 @@ mod tests {
     #[test]
     fn test_branch_mode_shows_branch_name_field() {
         let mut app = App::new();
+        app.show_advanced = true;
         app.focused_field = InputField::GitMode;
         app.handle_key(key(KeyCode::Right)); // Switch to Branch
         assert_eq!(app.git_mode, GitMode::Branch);
@@ -1278,6 +1441,7 @@ mod tests {
     #[test]
     fn test_worktree_mode_skips_branch_name_field() {
         let mut app = App::new();
+        app.show_advanced = true;
         app.focused_field = InputField::GitMode;
         assert_eq!(app.git_mode, GitMode::Worktree);
 
@@ -1288,6 +1452,7 @@ mod tests {
     #[test]
     fn test_branch_mode_submit_includes_branch_name() {
         let mut app = App::new();
+        app.show_advanced = true;
         // Type title
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
@@ -1316,6 +1481,7 @@ mod tests {
     #[test]
     fn test_branch_mode_empty_branch_name_shows_error() {
         let mut app = App::new();
+        app.show_advanced = true;
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
@@ -1330,6 +1496,7 @@ mod tests {
     #[test]
     fn test_prev_field_from_prompt_goes_to_branch_name_in_branch_mode() {
         let mut app = App::new();
+        app.show_advanced = true;
         app.git_mode = GitMode::Branch;
         app.focused_field = InputField::Prompt;
         app.handle_key(key(KeyCode::Up));
@@ -1339,9 +1506,71 @@ mod tests {
     #[test]
     fn test_prev_field_from_prompt_goes_to_git_mode_in_worktree_mode() {
         let mut app = App::new();
+        app.show_advanced = true;
         app.git_mode = GitMode::Worktree;
         app.focused_field = InputField::Prompt;
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.focused_field, InputField::GitMode);
+    }
+
+    #[test]
+    fn test_prev_field_from_prompt_goes_to_directory_in_basic_mode() {
+        let mut app = App::new();
+        app.focused_field = InputField::Prompt;
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.focused_field, InputField::Directory);
+    }
+
+    fn ctrl_a() -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn test_ctrl_a_toggles_advanced() {
+        let mut app = App::new();
+        assert!(!app.show_advanced);
+        app.handle_key(ctrl_a());
+        assert!(app.show_advanced);
+        app.handle_key(ctrl_a());
+        assert!(!app.show_advanced);
+    }
+
+    #[test]
+    fn test_ctrl_a_moves_focus_from_advanced_field() {
+        let mut app = App::new();
+        app.show_advanced = true;
+        app.focused_field = InputField::ClaudeArgs;
+        app.handle_key(ctrl_a()); // hide advanced
+        assert!(!app.show_advanced);
+        assert_eq!(app.focused_field, InputField::Prompt);
+    }
+
+    #[test]
+    fn test_ctrl_a_moves_focus_from_git_mode() {
+        let mut app = App::new();
+        app.show_advanced = true;
+        app.focused_field = InputField::GitMode;
+        app.handle_key(ctrl_a()); // hide advanced
+        assert_eq!(app.focused_field, InputField::Prompt);
+    }
+
+    #[test]
+    fn test_ctrl_a_preserves_basic_field_focus() {
+        let mut app = App::new();
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_a()); // show advanced
+        assert!(app.show_advanced);
+        assert_eq!(app.focused_field, InputField::Directory);
+    }
+
+    #[test]
+    fn test_default_show_advanced_is_false() {
+        let app = App::new();
+        assert!(!app.show_advanced);
     }
 }

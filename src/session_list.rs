@@ -115,7 +115,7 @@ impl SessionList {
         }
 
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => SessionListAction::Quit,
+            KeyCode::Char('q') => SessionListAction::Quit,
             KeyCode::Char('n') => SessionListAction::NewTask,
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_up();
@@ -125,7 +125,7 @@ impl SessionList {
                 self.move_down();
                 SessionListAction::None
             }
-            KeyCode::Char('a') => self.attach_selected(),
+            KeyCode::Enter | KeyCode::Char('a') => self.attach_selected(),
             KeyCode::Char('x') => {
                 self.request_kill_selected();
                 SessionListAction::None
@@ -421,10 +421,10 @@ mod tests {
     }
 
     #[test]
-    fn test_esc_quits() {
+    fn test_esc_does_not_quit() {
         let mut list = SessionList::new(sample_sessions());
         let action = list.handle_key(key(KeyCode::Esc));
-        assert_eq!(action, SessionListAction::Quit);
+        assert_eq!(action, SessionListAction::None);
     }
 
     #[test]
@@ -439,6 +439,19 @@ mod tests {
         let mut list = SessionList::new(sample_sessions());
         list.handle_key(key(KeyCode::Down)); // select task-two
         let action = list.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            action,
+            SessionListAction::Attach {
+                session_name: "task-two".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_enter_attaches_selected() {
+        let mut list = SessionList::new(sample_sessions());
+        list.handle_key(key(KeyCode::Down)); // select task-two
+        let action = list.handle_key(key(KeyCode::Enter));
         assert_eq!(
             action,
             SessionListAction::Attach {
