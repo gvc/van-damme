@@ -24,6 +24,8 @@ pub struct SessionList {
     pub sessions: Vec<SessionRecord>,
     pub list_state: ListState,
     pub status_message: Option<String>,
+    /// When set, we're waiting for the user to confirm killing the session at this index.
+    confirm_kill: Option<usize>,
 }
 
 impl SessionList {
@@ -36,6 +38,7 @@ impl SessionList {
             sessions,
             list_state,
             status_message: None,
+            confirm_kill: None,
         }
     }
 
@@ -97,6 +100,20 @@ impl SessionList {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> SessionListAction {
+        // If we're waiting for kill confirmation, handle that first
+        if let Some(idx) = self.confirm_kill {
+            self.confirm_kill = None;
+            match key.code {
+                KeyCode::Char('x') | KeyCode::Char('y') => {
+                    self.kill_session_at(idx);
+                }
+                _ => {
+                    self.status_message = Some("Kill cancelled.".to_string());
+                }
+            }
+            return SessionListAction::None;
+        }
+
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => SessionListAction::Quit,
             KeyCode::Char('n') => SessionListAction::NewTask,
@@ -110,7 +127,7 @@ impl SessionList {
             }
             KeyCode::Char('a') => self.attach_selected(),
             KeyCode::Char('x') => {
-                self.kill_selected();
+                self.request_kill_selected();
                 SessionListAction::None
             }
             _ => SessionListAction::None,
@@ -162,27 +179,36 @@ impl SessionList {
         }
     }
 
-    fn kill_selected(&mut self) {
+    fn request_kill_selected(&mut self) {
         if let Some(i) = self.list_state.selected() {
-            let session = &self.sessions[i];
-            let name = session.tmux_session_name.clone();
-            let dir = session.directory.clone();
-            match tmux::kill_session(&name) {
-                Ok(()) => {
-                    // Remove worktree directory
-                    if let Err(e) = tmux::remove_worktree(&dir, &name) {
-                        self.status_message =
-                            Some(format!("Killed session but failed to remove worktree: {e}"));
-                    } else {
-                        self.status_message = Some(format!("Killed session: {name}"));
-                    }
-                    // Remove from our DB too
-                    let _ = crate::session::remove_session(&name);
-                    self.refresh();
+            let name = &self.sessions[i].tmux_session_name;
+            self.status_message = Some(format!("Kill '{name}'? Press x/y to confirm, any other key to cancel."));
+            self.confirm_kill = Some(i);
+        }
+    }
+
+    fn kill_session_at(&mut self, idx: usize) {
+        if idx >= self.sessions.len() {
+            return;
+        }
+        let session = &self.sessions[idx];
+        let name = session.tmux_session_name.clone();
+        let dir = session.directory.clone();
+        match tmux::kill_session(&name) {
+            Ok(()) => {
+                // Remove worktree directory
+                if let Err(e) = tmux::remove_worktree(&dir, &name) {
+                    self.status_message =
+                        Some(format!("Killed session but failed to remove worktree: {e}"));
+                } else {
+                    self.status_message = Some(format!("Killed session: {name}"));
                 }
-                Err(e) => {
-                    self.status_message = Some(format!("Failed to kill '{name}': {e}"));
-                }
+                // Remove from our DB too
+                let _ = crate::session::remove_session(&name);
+                self.refresh();
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to kill '{name}': {e}"));
             }
         }
     }
@@ -284,9 +310,16 @@ impl SessionList {
         frame.render_widget(hints, chunks[1]);
 
         if let Some(ref msg) = self.status_message {
+            let bg = if self.confirm_kill.is_some() {
+                theme::ORANGE
+            } else if msg.starts_with("Kill cancelled") || msg.starts_with("Killed session") {
+                theme::GRAY
+            } else {
+                theme::ERROR
+            };
             let status = Paragraph::new(Line::from(Span::styled(
                 format!(" {msg} "),
-                Style::default().fg(Color::White).bg(theme::ERROR),
+                Style::default().fg(Color::White).bg(bg),
             )))
             .alignment(Alignment::Center);
             frame.render_widget(status, status_area);
@@ -450,5 +483,59 @@ mod tests {
         list.list_state.select(None);
         list.clamp_selection();
         assert_eq!(list.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_x_sets_confirm_kill() {
+        let mut list = SessionList::new(sample_sessions());
+        let action = list.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(action, SessionListAction::None);
+        assert_eq!(list.confirm_kill, Some(0));
+        assert!(list.status_message.as_ref().unwrap().contains("confirm"));
+    }
+
+    #[test]
+    fn test_x_on_empty_is_noop() {
+        let mut list = SessionList::new(vec![]);
+        list.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(list.confirm_kill, None);
+    }
+
+    #[test]
+    fn test_confirm_kill_cancelled_by_other_key() {
+        let mut list = SessionList::new(sample_sessions());
+        list.handle_key(key(KeyCode::Char('x'))); // enter confirmation
+        assert!(list.confirm_kill.is_some());
+
+        list.handle_key(key(KeyCode::Esc)); // cancel
+        assert_eq!(list.confirm_kill, None);
+        assert_eq!(
+            list.status_message.as_ref().unwrap(),
+            "Kill cancelled."
+        );
+    }
+
+    #[test]
+    fn test_confirm_kill_cancelled_preserves_sessions() {
+        let mut list = SessionList::new(sample_sessions());
+        let count_before = list.sessions.len();
+        list.handle_key(key(KeyCode::Char('x'))); // enter confirmation
+        list.handle_key(key(KeyCode::Char('n'))); // cancel with 'n'
+        assert_eq!(list.sessions.len(), count_before);
+        assert_eq!(list.confirm_kill, None);
+    }
+
+    #[test]
+    fn test_navigation_during_confirm_cancels() {
+        let mut list = SessionList::new(sample_sessions());
+        list.handle_key(key(KeyCode::Char('x'))); // enter confirmation
+        assert!(list.confirm_kill.is_some());
+
+        list.handle_key(key(KeyCode::Char('j'))); // navigation key cancels
+        assert_eq!(list.confirm_kill, None);
+        assert_eq!(
+            list.status_message.as_ref().unwrap(),
+            "Kill cancelled."
+        );
     }
 }
