@@ -49,12 +49,14 @@ pub fn session_exists(name: &str) -> Result<bool> {
 /// If `prompt` is provided, it will be sent to Claude as an initial prompt.
 /// If `claude_args` is provided, they are inserted before the prompt on the CLI.
 /// The `claude_session_id` is the pre-generated UUID used for `--session-id`.
+/// If `use_worktree` is true, Claude is launched with `--worktree <name>`.
 pub fn create_session(
     name: &str,
     dir: &str,
     prompt: Option<&str>,
     claude_args: Option<&str>,
     claude_session_id: &str,
+    use_worktree: bool,
 ) -> Result<TmuxSession> {
     // Canonicalize the base directory so tmux gets an absolute, resolved path
     let abs_dir = std::path::Path::new(dir)
@@ -64,7 +66,11 @@ pub fn create_session(
         .to_string();
 
     // Build the claude command with optional extra args and prompt
-    let mut claude_cmd = format!("claude --worktree {name} --session-id {claude_session_id}");
+    let mut claude_cmd = if use_worktree {
+        format!("claude --worktree {name} --session-id {claude_session_id}")
+    } else {
+        format!("claude --session-id {claude_session_id}")
+    };
     if let Some(args) = claude_args {
         claude_cmd.push(' ');
         claude_cmd.push_str(args);
@@ -322,7 +328,7 @@ mod tests {
             .args(["kill-session", "-t", name])
             .status();
 
-        let result = create_session(name, dir, None, None, "test-uuid-123");
+        let result = create_session(name, dir, None, None, "test-uuid-123", true);
         assert!(result.is_ok());
 
         let session = result.unwrap();
