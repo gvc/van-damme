@@ -1,5 +1,6 @@
 mod app;
 mod event;
+mod git;
 mod process_hook;
 mod recent_dirs;
 mod session;
@@ -93,14 +94,17 @@ fn main() -> Result<()> {
                                 Action::Submit {
                                     title,
                                     directory,
+                                    git_mode,
+                                    branch_name,
                                     prompt,
                                     claude_args,
                                 } => {
-                                    let session_name =
-                                        tmux::sanitize_session_name(&title);
+                                    let session_name = tmux::sanitize_session_name(&title);
                                     if let Err(e) = launch_session(
                                         &title,
                                         &directory,
+                                        git_mode,
+                                        branch_name.as_deref(),
                                         prompt.as_deref(),
                                         claude_args.as_deref(),
                                     ) {
@@ -140,6 +144,8 @@ fn main() -> Result<()> {
 fn launch_session(
     title: &str,
     directory: &str,
+    git_mode: app::GitMode,
+    branch_name: Option<&str>,
     prompt: Option<&str>,
     claude_args: Option<&str>,
 ) -> Result<()> {
@@ -169,6 +175,12 @@ fn launch_session(
         ));
     }
 
+    // If branch mode, prepare the branch before launching Claude
+    let use_worktree = git_mode == app::GitMode::Worktree;
+    if let (app::GitMode::Branch, Some(branch)) = (git_mode, branch_name) {
+        git::prepare_branch(directory, branch)?;
+    }
+
     // Generate the claude session UUID and persist the record BEFORE creating the
     // tmux session. Claude's SessionStart hook fires immediately on launch and needs
     // the record to already exist in the DB to set up the editor window.
@@ -187,6 +199,7 @@ fn launch_session(
         prompt,
         claude_args,
         &claude_session_id,
+        use_worktree,
     ) {
         Ok(s) => s,
         Err(e) => {
