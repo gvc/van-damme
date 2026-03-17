@@ -50,14 +50,18 @@ jobs:
           fi
           echo "version=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
 
-      - name: Update Cargo.toml
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Update Cargo.toml and Cargo.lock
         run: |
           sed -i "s/^version = \"${{ steps.current.outputs.version }}\"/version = \"${{ steps.new.outputs.version }}\"/" Cargo.toml
+          cargo generate-lockfile
 
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml
+          git add Cargo.toml Cargo.lock
           git commit -m "chore: bump version to ${{ steps.new.outputs.version }}"
           git push
