@@ -140,9 +140,6 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
         editor_dir,
     ])?;
 
-    // Keep focus on the claude pane (left)
-    run_tmux(&["select-pane", "-t", &format!("{session_name}:claude.0")])?;
-
     // Create editor window with vim
     run_tmux(&[
         "new-window",
@@ -173,8 +170,9 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
         editor_dir,
     ])?;
 
-    // Select the claude window as the default
+    // Select the claude window and focus the claude pane (left)
     run_tmux(&["select-window", "-t", &format!("{session_name}:claude")])?;
+    run_tmux(&["select-pane", "-t", &format!("{session_name}:claude.0")])?;
 
     Ok(())
 }
