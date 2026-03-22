@@ -235,6 +235,14 @@ impl App {
                 self.quit();
                 Action::Quit
             }
+            KeyCode::Tab
+                if self.focused_field == InputField::Directory
+                    && self.dir_suggestion.is_some()
+                    && self.cursor_at_end() =>
+            {
+                self.complete_directory();
+                Action::None
+            }
             KeyCode::Tab | KeyCode::Down => {
                 self.next_field();
                 Action::None
@@ -665,7 +673,10 @@ impl App {
             Span::styled(" Basic ", basic_style),
             Span::styled("  ", Style::default().bg(theme::BG)),
             Span::styled(" Advanced ", advanced_style),
-            Span::styled("  (Ctrl+A to toggle)", Style::default().fg(theme::GRAY_DIM).bg(theme::BG)),
+            Span::styled(
+                "  (Ctrl+A to toggle)",
+                Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
+            ),
         ]);
         let tab_para = Paragraph::new(tab_line).style(Style::default().bg(theme::BG));
         frame.render_widget(tab_para, chunks[tab_bar_idx]);
@@ -876,9 +887,9 @@ impl App {
             "←/→: toggle  |  Tab: next  |  Ctrl+A: basic  |  Enter: submit  |  Esc: quit"
         } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
             if !self.recent_dirs.is_empty() {
-                "→: complete  |  Ctrl+D: recent dirs  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"
+                "Tab/→: complete  |  Ctrl+D: recent dirs  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"
             } else {
-                "→: complete  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"
+                "Tab/→: complete  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"
             }
         } else if self.focused_field == InputField::Directory && !self.recent_dirs.is_empty() {
             "Ctrl+D: recent dirs  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"

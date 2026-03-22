@@ -182,7 +182,9 @@ impl SessionList {
     fn request_kill_selected(&mut self) {
         if let Some(i) = self.list_state.selected() {
             let name = &self.sessions[i].tmux_session_name;
-            self.status_message = Some(format!("Kill '{name}'? Press x/y to confirm, any other key to cancel."));
+            self.status_message = Some(format!(
+                "Kill '{name}'? Press x/y to confirm, any other key to cancel."
+            ));
             self.confirm_kill = Some(i);
         }
     }
@@ -522,10 +524,7 @@ mod tests {
 
         list.handle_key(key(KeyCode::Esc)); // cancel
         assert_eq!(list.confirm_kill, None);
-        assert_eq!(
-            list.status_message.as_ref().unwrap(),
-            "Kill cancelled."
-        );
+        assert_eq!(list.status_message.as_ref().unwrap(), "Kill cancelled.");
     }
 
     #[test]
@@ -546,9 +545,6 @@ mod tests {
 
         list.handle_key(key(KeyCode::Char('j'))); // navigation key cancels
         assert_eq!(list.confirm_kill, None);
-        assert_eq!(
-            list.status_message.as_ref().unwrap(),
-            "Kill cancelled."
-        );
+        assert_eq!(list.status_message.as_ref().unwrap(), "Kill cancelled.");
     }
 }
