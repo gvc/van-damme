@@ -55,7 +55,7 @@ fn stash_if_dirty(directory: &str, context: &str) -> Result<()> {
     Ok(())
 }
 
-/// Try to fetch + pull from origin. Best-effort — won't fail if remote doesn't exist.
+/// Fetch from origin and fast-forward merge. Best-effort — won't fail if remote doesn't exist.
 fn sync_with_origin(directory: &str, branch_name: &str) {
     let fetch_result = Command::new("git")
         .args(["fetch", "origin", branch_name])
@@ -67,15 +67,17 @@ fn sync_with_origin(directory: &str, branch_name: &str) {
     if let Ok(status) = fetch_result
         && status.success()
     {
-        let pull_output = Command::new("git")
-            .args(["pull", "origin", branch_name, "--ff-only"])
+        let remote_ref = format!("origin/{branch_name}");
+        let merge_output = Command::new("git")
+            .args(["merge", "--ff-only", &remote_ref])
             .current_dir(directory)
             .output();
-        if let Ok(output) = pull_output
+        if let Ok(output) = merge_output
             && !output.status.success()
         {
+            // ff-only failed (diverged history) — try rebase instead
             let _ = Command::new("git")
-                .args(["pull", "origin", branch_name, "--rebase"])
+                .args(["rebase", &remote_ref])
                 .current_dir(directory)
                 .output();
         }
