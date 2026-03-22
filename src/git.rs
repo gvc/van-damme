@@ -30,8 +30,14 @@ pub fn prepare_worktree(directory: &str) -> Result<()> {
 
     run_git(directory, &["checkout", &main_branch])?;
 
-    sync_with_origin(directory, &main_branch);
+    pull_from_origin(directory, &main_branch)?;
 
+    Ok(())
+}
+
+/// Pull latest from origin. Required step — returns an error if it fails.
+fn pull_from_origin(directory: &str, branch_name: &str) -> Result<()> {
+    run_git(directory, &["pull", "origin", branch_name])?;
     Ok(())
 }
 
@@ -351,13 +357,34 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Create a bare "origin" remote for a test repo so that pull works.
+    fn add_origin(repo_dir: &std::path::Path, bare_dir: &std::path::Path) {
+        // Clone --bare to create the origin
+        Command::new("git")
+            .args([
+                "clone",
+                "--bare",
+                repo_dir.to_str().unwrap(),
+                bare_dir.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        // Point the repo at the bare clone as origin
+        Command::new("git")
+            .args(["remote", "add", "origin", bare_dir.to_str().unwrap()])
+            .current_dir(repo_dir)
+            .output()
+            .unwrap();
+    }
+
     #[test]
     fn test_prepare_worktree_clean_repo() {
         let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
         init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
         let dir = tmp.path().to_str().unwrap();
 
-        // Already on main, clean — should be a no-op
         prepare_worktree(dir).unwrap();
 
         assert_eq!(current_branch(tmp.path()), "main");
@@ -367,7 +394,9 @@ mod tests {
     #[test]
     fn test_prepare_worktree_checks_out_main() {
         let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
         init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
         let dir = tmp.path().to_str().unwrap();
 
         // Switch to a feature branch
@@ -386,7 +415,9 @@ mod tests {
     #[test]
     fn test_prepare_worktree_stashes_changes() {
         let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
         init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
         let dir = tmp.path().to_str().unwrap();
 
         // Create dirty working tree
@@ -410,7 +441,9 @@ mod tests {
     #[test]
     fn test_prepare_worktree_feature_branch_dirty() {
         let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
         init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
         let dir = tmp.path().to_str().unwrap();
 
         // Switch to feature branch and make it dirty
@@ -437,5 +470,59 @@ mod tests {
             .unwrap();
         let stash_list = String::from_utf8_lossy(&output.stdout);
         assert!(stash_list.contains("van-damme: auto-stash"));
+    }
+
+    #[test]
+    fn test_prepare_worktree_pulls_upstream_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        // Push a new commit directly to the bare origin to simulate upstream changes
+        let pusher = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args([
+                "clone",
+                bare.path().to_str().unwrap(),
+                pusher.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+        std::fs::write(pusher.path().join("upstream.txt"), "from upstream").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "upstream commit"])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["push", "origin", "main"])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+
+        // The local repo should NOT have upstream.txt yet
+        assert!(!tmp.path().join("upstream.txt").exists());
+
+        prepare_worktree(dir).unwrap();
+
+        // After prepare_worktree, the upstream commit should be pulled
+        assert!(tmp.path().join("upstream.txt").exists());
     }
 }
