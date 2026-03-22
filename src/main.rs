@@ -175,10 +175,17 @@ fn launch_session(
         ));
     }
 
-    // If branch mode, prepare the branch before launching Claude
+    // Prepare git state before launching Claude
     let use_worktree = git_mode == app::GitMode::Worktree;
-    if let (app::GitMode::Branch, Some(branch)) = (git_mode, branch_name) {
-        git::prepare_branch(directory, branch)?;
+    match git_mode {
+        app::GitMode::Worktree => {
+            git::prepare_worktree(directory)?;
+        }
+        app::GitMode::Branch => {
+            if let Some(branch) = branch_name {
+                git::prepare_branch(directory, branch)?;
+            }
+        }
     }
 
     // Generate the claude session UUID and persist the record BEFORE creating the
