@@ -66,22 +66,26 @@ pub fn create_session(
         .to_string();
 
     // Build the claude command with optional extra args and prompt
-    let mut claude_cmd = if use_worktree {
+    let mut claude_parts = if use_worktree {
         format!("claude --worktree {name} --session-id {claude_session_id}")
     } else {
         format!("claude --session-id {claude_session_id}")
     };
     if let Some(args) = claude_args {
-        claude_cmd.push(' ');
-        claude_cmd.push_str(args);
+        claude_parts.push(' ');
+        claude_parts.push_str(args);
     }
     if let Some(p) = prompt {
-        claude_cmd.push(' ');
-        claude_cmd.push_str(&shell_escape(p));
+        claude_parts.push(' ');
+        claude_parts.push_str(&shell_escape(p));
     }
+    // Wrap so that if claude exits with an error, the pane stays open showing it
+    let claude_cmd = format!(
+        "{claude_parts} || {{ echo ''; echo '[van-damme] claude exited with code '$?; read; }}"
+    );
 
     // Create detached session with claude window, starting in the project directory
-    let status = Command::new("tmux")
+    let output = Command::new("tmux")
         .args([
             "new-session",
             "-d",
@@ -93,9 +97,11 @@ pub fn create_session(
             &abs_dir,
             &claude_cmd,
         ])
-        .status()?;
-    if !status.success() {
-        return Err(eyre!("Failed to create tmux session '{name}'"));
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("Failed to create tmux session '{name}': {stderr}"));
     }
 
     // Capture session ID

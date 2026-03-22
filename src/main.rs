@@ -163,19 +163,31 @@ fn main() -> Result<()> {
                         }
 
                         // Check if the launch finished
-                        if let Ok(result) = state.result_rx.try_recv() {
-                            let session_name = state.session_name.clone();
-                            launch_state = None;
-                            match result {
-                                Ok(()) => {
-                                    session_list.refresh();
-                                    session_list.select_by_name(&session_name);
-                                    screen = Screen::SessionList;
+                        match state.result_rx.try_recv() {
+                            Ok(result) => {
+                                let session_name = state.session_name.clone();
+                                launch_state = None;
+                                match result {
+                                    Ok(()) => {
+                                        session_list.refresh();
+                                        session_list.select_by_name(&session_name);
+                                        screen = Screen::SessionList;
+                                    }
+                                    Err(e) => {
+                                        app.error_message = Some(e);
+                                        screen = Screen::NewTask;
+                                    }
                                 }
-                                Err(e) => {
-                                    app.error_message = Some(e);
-                                    screen = Screen::NewTask;
-                                }
+                            }
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                // Thread panicked or exited without sending
+                                launch_state = None;
+                                app.error_message =
+                                    Some("Session launch failed unexpectedly".into());
+                                screen = Screen::NewTask;
+                            }
+                            Err(mpsc::TryRecvError::Empty) => {
+                                // Still running, keep waiting
                             }
                         }
                     }
@@ -320,9 +332,9 @@ fn launch_session(
     let use_worktree = git_mode == app::GitMode::Worktree;
     match git_mode {
         app::GitMode::Worktree => {
-            let _ = progress.send("Syncing repository to main branch...".into());
-            git::prepare_worktree(directory)?;
-            let _ = progress.send("Repository synced".into());
+            git::prepare_worktree(directory, |step| {
+                let _ = progress.send(step.to_string());
+            })?;
         }
         app::GitMode::Branch => {
             if let Some(branch) = branch_name {

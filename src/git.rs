@@ -20,24 +20,23 @@ pub fn prepare_branch(directory: &str, branch_name: &str) -> Result<()> {
 }
 
 /// Prepare the repo for worktree creation: stash if dirty, checkout main, and pull latest.
-pub fn prepare_worktree(directory: &str) -> Result<()> {
+/// Calls `on_step` with a message for each step so the UI can show progress.
+pub fn prepare_worktree(directory: &str, on_step: impl Fn(&str)) -> Result<()> {
+    on_step("Detecting main branch...");
     let main_branch = detect_main_branch(directory)?;
 
+    on_step("Stashing changes (if any)...");
     stash_if_dirty(
         directory,
         &format!("worktree creation (switching to {main_branch})"),
     )?;
 
+    on_step(&format!("Checking out '{main_branch}'..."));
     run_git(directory, &["checkout", &main_branch])?;
 
-    pull_from_origin(directory, &main_branch)?;
+    on_step(&format!("Pulling latest from origin/{main_branch}..."));
+    run_git(directory, &["pull", "origin", &main_branch])?;
 
-    Ok(())
-}
-
-/// Pull latest from origin. Required step — returns an error if it fails.
-fn pull_from_origin(directory: &str, branch_name: &str) -> Result<()> {
-    run_git(directory, &["pull", "origin", branch_name])?;
     Ok(())
 }
 
@@ -150,10 +149,19 @@ fn run_git(directory: &str, args: &[&str]) -> Result<()> {
     let output = Command::new("git")
         .args(args)
         .current_dir(directory)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(eyre!("git {} failed: {}", args.join(" "), stderr.trim()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(eyre!(
+            "git {} failed (exit {}): stderr={} stdout={}",
+            args.join(" "),
+            output.status,
+            stderr.trim(),
+            stdout.trim()
+        ));
     }
     Ok(())
 }
@@ -385,7 +393,7 @@ mod tests {
         add_origin(tmp.path(), bare.path());
         let dir = tmp.path().to_str().unwrap();
 
-        prepare_worktree(dir).unwrap();
+        prepare_worktree(dir, |_| {}).unwrap();
 
         assert_eq!(current_branch(tmp.path()), "main");
         assert!(!has_uncommitted_changes(dir).unwrap());
@@ -407,7 +415,7 @@ mod tests {
             .unwrap();
         assert_eq!(current_branch(tmp.path()), "feature-x");
 
-        prepare_worktree(dir).unwrap();
+        prepare_worktree(dir, |_| {}).unwrap();
 
         assert_eq!(current_branch(tmp.path()), "main");
     }
@@ -424,7 +432,7 @@ mod tests {
         std::fs::write(tmp.path().join("README.md"), "modified").unwrap();
         assert!(has_uncommitted_changes(dir).unwrap());
 
-        prepare_worktree(dir).unwrap();
+        prepare_worktree(dir, |_| {}).unwrap();
 
         // Changes should be stashed
         assert!(!has_uncommitted_changes(dir).unwrap());
@@ -456,7 +464,7 @@ mod tests {
         assert_eq!(current_branch(tmp.path()), "feature-y");
         assert!(has_uncommitted_changes(dir).unwrap());
 
-        prepare_worktree(dir).unwrap();
+        prepare_worktree(dir, |_| {}).unwrap();
 
         // Should be on main with clean working tree
         assert_eq!(current_branch(tmp.path()), "main");
@@ -520,7 +528,7 @@ mod tests {
         // The local repo should NOT have upstream.txt yet
         assert!(!tmp.path().join("upstream.txt").exists());
 
-        prepare_worktree(dir).unwrap();
+        prepare_worktree(dir, |_| {}).unwrap();
 
         // After prepare_worktree, the upstream commit should be pulled
         assert!(tmp.path().join("upstream.txt").exists());
