@@ -9,8 +9,14 @@ pub mod theme;
 mod tmux;
 mod tui;
 
+use std::sync::mpsc;
+use std::thread;
+
 use color_eyre::Result;
-use ratatui::{style::Style, widgets::Block};
+use ratatui::layout::{Constraint, Flex, Layout};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use app::{Action, App};
 use event::{Event, EventHandler};
@@ -20,7 +26,18 @@ use session_list::{SessionList, SessionListAction};
 enum Screen {
     SessionList,
     NewTask,
+    Launching,
 }
+
+struct LaunchState {
+    session_name: String,
+    progress_rx: mpsc::Receiver<String>,
+    result_rx: mpsc::Receiver<Result<(), String>>,
+    messages: Vec<String>,
+    tick: usize,
+}
+
+const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -48,6 +65,7 @@ fn main() -> Result<()> {
     let recent_dirs = recent_dirs::recent_directories(5).unwrap_or_default();
     let mut app = App::with_recent_dirs(recent_dirs.clone());
     let mut screen = Screen::SessionList;
+    let mut launch_state: Option<LaunchState> = None;
     let mut running = true;
 
     while running {
@@ -60,6 +78,11 @@ fn main() -> Result<()> {
             match screen {
                 Screen::SessionList => session_list.draw(frame),
                 Screen::NewTask => app.draw(frame),
+                Screen::Launching => {
+                    if let Some(ref state) = launch_state {
+                        draw_launching(frame, state);
+                    }
+                }
             }
         })?;
 
@@ -100,20 +123,17 @@ fn main() -> Result<()> {
                                     claude_args,
                                 } => {
                                     let session_name = tmux::sanitize_session_name(&title);
-                                    if let Err(e) = launch_session(
-                                        &title,
-                                        &directory,
+                                    let state = spawn_launch(
+                                        session_name,
+                                        title,
+                                        directory,
                                         git_mode,
-                                        branch_name.as_deref(),
-                                        prompt.as_deref(),
-                                        claude_args.as_deref(),
-                                    ) {
-                                        app.error_message = Some(format!("{e}"));
-                                    } else {
-                                        session_list.refresh();
-                                        session_list.select_by_name(&session_name);
-                                        screen = Screen::SessionList;
-                                    }
+                                        branch_name,
+                                        prompt,
+                                        claude_args,
+                                    );
+                                    launch_state = Some(state);
+                                    screen = Screen::Launching;
                                 }
                                 Action::Quit => {
                                     // Go back to session list instead of quitting
@@ -123,14 +143,45 @@ fn main() -> Result<()> {
                                 Action::None => {}
                             }
                         }
+                        Screen::Launching => {
+                            // Ignore keys while launching
+                        }
                     }
                 }
             }
-            Event::Tick => {
-                if matches!(screen, Screen::SessionList) {
+            Event::Tick => match screen {
+                Screen::SessionList => {
                     session_list.refresh_states();
                 }
-            }
+                Screen::Launching => {
+                    if let Some(ref mut state) = launch_state {
+                        state.tick += 1;
+
+                        // Drain progress messages
+                        while let Ok(msg) = state.progress_rx.try_recv() {
+                            state.messages.push(msg);
+                        }
+
+                        // Check if the launch finished
+                        if let Ok(result) = state.result_rx.try_recv() {
+                            let session_name = state.session_name.clone();
+                            launch_state = None;
+                            match result {
+                                Ok(()) => {
+                                    session_list.refresh();
+                                    session_list.select_by_name(&session_name);
+                                    screen = Screen::SessionList;
+                                }
+                                Err(e) => {
+                                    app.error_message = Some(e);
+                                    screen = Screen::NewTask;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
         }
     }
 
@@ -141,6 +192,95 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn draw_launching(frame: &mut ratatui::Frame, state: &LaunchState) {
+    let area = frame.area();
+
+    let box_width = 60u16.min(area.width.saturating_sub(4));
+    let content_lines = state.messages.len() as u16 + 1; // +1 for spinner line
+    let box_height = (content_lines + 2)
+        .min(area.height.saturating_sub(4))
+        .max(5); // +2 for borders
+
+    let [vert_area] = Layout::vertical([Constraint::Length(box_height)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [centered] = Layout::horizontal([Constraint::Length(box_width)])
+        .flex(Flex::Center)
+        .areas(vert_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::ORANGE))
+        .title(" Launching Session ")
+        .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+        .style(Style::default().bg(theme::BG));
+
+    let spinner_char = SPINNER[state.tick % SPINNER.len()];
+
+    let mut lines: Vec<Line> = state
+        .messages
+        .iter()
+        .map(|msg| {
+            Line::from(vec![
+                Span::styled("  ✓ ", Style::default().fg(theme::ORANGE)),
+                Span::styled(msg.clone(), Style::default().fg(theme::TEXT)),
+            ])
+        })
+        .collect();
+
+    // Add the current spinner line
+    let spinner_text = if state.messages.is_empty() {
+        "Starting...".to_string()
+    } else {
+        "Working...".to_string()
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {spinner_char} "),
+            Style::default().fg(theme::ORANGE_BRIGHT),
+        ),
+        Span::styled(spinner_text, Style::default().fg(theme::GRAY_DIM)),
+    ]));
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .style(Style::default().bg(theme::BG));
+    frame.render_widget(paragraph, centered);
+}
+
+fn spawn_launch(
+    session_name: String,
+    title: String,
+    directory: String,
+    git_mode: app::GitMode,
+    branch_name: Option<String>,
+    prompt: Option<String>,
+    claude_args: Option<String>,
+) -> LaunchState {
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = launch_session(
+            &title,
+            &directory,
+            git_mode,
+            branch_name.as_deref(),
+            prompt.as_deref(),
+            claude_args.as_deref(),
+            &progress_tx,
+        );
+        let _ = result_tx.send(result.map_err(|e| format!("{e}")));
+    });
+
+    LaunchState {
+        session_name,
+        progress_rx,
+        result_rx,
+        messages: Vec::new(),
+        tick: 0,
+    }
+}
+
 fn launch_session(
     title: &str,
     directory: &str,
@@ -148,6 +288,7 @@ fn launch_session(
     branch_name: Option<&str>,
     prompt: Option<&str>,
     claude_args: Option<&str>,
+    progress: &mpsc::Sender<String>,
 ) -> Result<()> {
     let session_name = tmux::sanitize_session_name(title);
 
@@ -179,11 +320,15 @@ fn launch_session(
     let use_worktree = git_mode == app::GitMode::Worktree;
     match git_mode {
         app::GitMode::Worktree => {
+            let _ = progress.send("Syncing repository to main branch...".into());
             git::prepare_worktree(directory)?;
+            let _ = progress.send("Repository synced".into());
         }
         app::GitMode::Branch => {
             if let Some(branch) = branch_name {
+                let _ = progress.send(format!("Preparing branch '{branch}'..."));
                 git::prepare_branch(directory, branch)?;
+                let _ = progress.send(format!("Branch '{branch}' ready"));
             }
         }
     }
@@ -192,6 +337,8 @@ fn launch_session(
     // tmux session. Claude's SessionStart hook fires immediately on launch and needs
     // the record to already exist in the DB to set up the editor window.
     let claude_session_id = uuid::Uuid::new_v4().to_string();
+
+    let _ = progress.send("Creating tmux session...".into());
 
     session::add_session(
         String::new(), // placeholder — updated after tmux session is created
@@ -220,6 +367,8 @@ fn launch_session(
     session::update_tmux_session_id(&session_name, &tmux_session.session_id)?;
 
     recent_dirs::record_directory(directory)?;
+
+    let _ = progress.send("Session launched".into());
 
     Ok(())
 }
@@ -267,5 +416,41 @@ mod tests {
     fn test_sanitize_produces_valid_name() {
         let name = tmux::sanitize_session_name("My Cool Task!");
         assert_eq!(name, "my-cool-task");
+    }
+
+    #[test]
+    fn test_launch_state_spinner_cycles() {
+        let (_ptx, prx) = mpsc::channel();
+        let (_rtx, rrx) = mpsc::channel();
+        let state = LaunchState {
+            session_name: "test".into(),
+            progress_rx: prx,
+            result_rx: rrx,
+            messages: vec!["Step 1 done".into()],
+            tick: 0,
+        };
+        assert_eq!(SPINNER[state.tick % SPINNER.len()], '⠋');
+    }
+
+    #[test]
+    fn test_launch_state_receives_progress() {
+        let (ptx, prx) = mpsc::channel();
+        let (_rtx, rrx) = mpsc::channel();
+        let mut state = LaunchState {
+            session_name: "test".into(),
+            progress_rx: prx,
+            result_rx: rrx,
+            messages: Vec::new(),
+            tick: 0,
+        };
+
+        ptx.send("Step 1".into()).unwrap();
+        ptx.send("Step 2".into()).unwrap();
+
+        while let Ok(msg) = state.progress_rx.try_recv() {
+            state.messages.push(msg);
+        }
+
+        assert_eq!(state.messages, vec!["Step 1", "Step 2"]);
     }
 }
