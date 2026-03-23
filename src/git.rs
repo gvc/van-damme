@@ -3,36 +3,65 @@ use std::process::Command;
 
 /// Prepare a branch in the given directory: stash if dirty, create/checkout branch, sync with origin.
 pub fn prepare_branch(directory: &str, branch_name: &str) -> Result<()> {
-    // Stash any unstaged/uncommitted changes
-    let has_changes = has_uncommitted_changes(directory)?;
-    if has_changes {
-        let status = Command::new("git")
-            .args([
-                "stash",
-                "push",
-                "-m",
-                &format!("van-damme: auto-stash before switching to {branch_name}"),
-            ])
-            .current_dir(directory)
-            .output()?;
-        if !status.status.success() {
-            let stderr = String::from_utf8_lossy(&status.stderr);
-            return Err(eyre!("Failed to stash changes: {stderr}"));
-        }
-    }
+    stash_if_dirty(directory, &format!("switching to {branch_name}"))?;
 
     // Check if the branch exists locally
     let local_exists = branch_exists_locally(directory, branch_name)?;
 
     if local_exists {
-        // Checkout the existing branch
         run_git(directory, &["checkout", branch_name])?;
     } else {
-        // Create and checkout a new branch
         run_git(directory, &["checkout", "-b", branch_name])?;
     }
 
-    // Try to sync with origin (fetch + pull), but don't fail if remote doesn't exist
+    sync_with_origin(directory, branch_name);
+
+    Ok(())
+}
+
+/// Prepare the repo for worktree creation: stash if dirty, checkout main, and pull latest.
+/// Calls `on_step` with a message for each step so the UI can show progress.
+pub fn prepare_worktree(directory: &str, on_step: impl Fn(&str)) -> Result<()> {
+    on_step("Detecting main branch...");
+    let main_branch = detect_main_branch(directory)?;
+
+    on_step("Stashing changes (if any)...");
+    stash_if_dirty(
+        directory,
+        &format!("worktree creation (switching to {main_branch})"),
+    )?;
+
+    on_step(&format!("Checking out '{main_branch}'..."));
+    run_git(directory, &["checkout", &main_branch])?;
+
+    on_step(&format!("Pulling latest from origin/{main_branch}..."));
+    run_git(directory, &["pull", "origin", &main_branch])?;
+
+    Ok(())
+}
+
+/// Stash uncommitted changes if the working tree is dirty.
+fn stash_if_dirty(directory: &str, context: &str) -> Result<()> {
+    if has_uncommitted_changes(directory)? {
+        let output = Command::new("git")
+            .args([
+                "stash",
+                "push",
+                "-m",
+                &format!("van-damme: auto-stash before {context}"),
+            ])
+            .current_dir(directory)
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("Failed to stash changes: {stderr}"));
+        }
+    }
+    Ok(())
+}
+
+/// Fetch from origin and fast-forward merge. Best-effort — won't fail if remote doesn't exist.
+fn sync_with_origin(directory: &str, branch_name: &str) {
     let fetch_result = Command::new("git")
         .args(["fetch", "origin", branch_name])
         .current_dir(directory)
@@ -43,21 +72,56 @@ pub fn prepare_branch(directory: &str, branch_name: &str) -> Result<()> {
     if let Ok(status) = fetch_result
         && status.success()
     {
-        // Remote branch exists, pull changes
-        let pull_output = Command::new("git")
-            .args(["pull", "origin", branch_name, "--ff-only"])
+        let remote_ref = format!("origin/{branch_name}");
+        let merge_output = Command::new("git")
+            .args(["merge", "--ff-only", &remote_ref])
             .current_dir(directory)
-            .output()?;
-        if !pull_output.status.success() {
-            // Non-fast-forward — try rebase instead
+            .output();
+        if let Ok(output) = merge_output
+            && !output.status.success()
+        {
+            // ff-only failed (diverged history) — try rebase instead
             let _ = Command::new("git")
-                .args(["pull", "origin", branch_name, "--rebase"])
+                .args(["rebase", &remote_ref])
                 .current_dir(directory)
                 .output();
         }
     }
+}
 
-    Ok(())
+/// Detect the main branch name for a repository.
+/// Tries: origin/HEAD symbolic ref → "main" exists → "master" exists.
+fn detect_main_branch(directory: &str) -> Result<String> {
+    // Try symbolic-ref of origin/HEAD
+    let output = Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(directory)
+        .output();
+
+    if let Ok(out) = output
+        && out.status.success()
+    {
+        let refpath = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if let Some(branch) = refpath.rsplit('/').next()
+            && !branch.is_empty()
+        {
+            return Ok(branch.to_string());
+        }
+    }
+
+    // Fallback: check for "main" branch locally
+    if branch_exists_locally(directory, "main")? {
+        return Ok("main".to_string());
+    }
+
+    // Fallback: check for "master" branch locally
+    if branch_exists_locally(directory, "master")? {
+        return Ok("master".to_string());
+    }
+
+    Err(eyre!(
+        "Could not detect main branch: no origin/HEAD, 'main', or 'master' branch found"
+    ))
 }
 
 fn has_uncommitted_changes(directory: &str) -> Result<bool> {
@@ -85,10 +149,19 @@ fn run_git(directory: &str, args: &[&str]) -> Result<()> {
     let output = Command::new("git")
         .args(args)
         .current_dir(directory)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(eyre!("git {} failed: {}", args.join(" "), stderr.trim()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(eyre!(
+            "git {} failed (exit {}): stderr={} stdout={}",
+            args.join(" "),
+            output.status,
+            stderr.trim(),
+            stdout.trim()
+        ));
     }
     Ok(())
 }
@@ -123,6 +196,12 @@ mod tests {
             .unwrap();
         Command::new("git")
             .args(["commit", "-m", "initial"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        // Ensure the default branch is called "main" regardless of git config
+        Command::new("git")
+            .args(["branch", "-M", "main"])
             .current_dir(dir)
             .output()
             .unwrap();
@@ -231,5 +310,227 @@ mod tests {
             .unwrap();
         let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
         assert_eq!(branch, "existing-branch");
+    }
+
+    fn current_branch(dir: &std::path::Path) -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn test_detect_main_branch_with_main() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        let result = detect_main_branch(dir).unwrap();
+        assert_eq!(result, "main");
+    }
+
+    #[test]
+    fn test_detect_main_branch_with_master() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        // Rename "main" to "master"
+        Command::new("git")
+            .args(["branch", "-M", "main", "master"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+
+        let result = detect_main_branch(dir).unwrap();
+        assert_eq!(result, "master");
+    }
+
+    #[test]
+    fn test_detect_main_branch_no_main_or_master() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        // Rename to something that is neither main nor master
+        Command::new("git")
+            .args(["branch", "-M", "main", "develop"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+
+        let result = detect_main_branch(dir);
+        assert!(result.is_err());
+    }
+
+    /// Create a bare "origin" remote for a test repo so that pull works.
+    fn add_origin(repo_dir: &std::path::Path, bare_dir: &std::path::Path) {
+        // Clone --bare to create the origin
+        Command::new("git")
+            .args([
+                "clone",
+                "--bare",
+                repo_dir.to_str().unwrap(),
+                bare_dir.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        // Point the repo at the bare clone as origin
+        Command::new("git")
+            .args(["remote", "add", "origin", bare_dir.to_str().unwrap()])
+            .current_dir(repo_dir)
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_prepare_worktree_clean_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        prepare_worktree(dir, |_| {}).unwrap();
+
+        assert_eq!(current_branch(tmp.path()), "main");
+        assert!(!has_uncommitted_changes(dir).unwrap());
+    }
+
+    #[test]
+    fn test_prepare_worktree_checks_out_main() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        // Switch to a feature branch
+        Command::new("git")
+            .args(["checkout", "-b", "feature-x"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert_eq!(current_branch(tmp.path()), "feature-x");
+
+        prepare_worktree(dir, |_| {}).unwrap();
+
+        assert_eq!(current_branch(tmp.path()), "main");
+    }
+
+    #[test]
+    fn test_prepare_worktree_stashes_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        // Create dirty working tree
+        std::fs::write(tmp.path().join("README.md"), "modified").unwrap();
+        assert!(has_uncommitted_changes(dir).unwrap());
+
+        prepare_worktree(dir, |_| {}).unwrap();
+
+        // Changes should be stashed
+        assert!(!has_uncommitted_changes(dir).unwrap());
+
+        let output = Command::new("git")
+            .args(["stash", "list"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let stash_list = String::from_utf8_lossy(&output.stdout);
+        assert!(stash_list.contains("van-damme: auto-stash"));
+    }
+
+    #[test]
+    fn test_prepare_worktree_feature_branch_dirty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        // Switch to feature branch and make it dirty
+        Command::new("git")
+            .args(["checkout", "-b", "feature-y"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        std::fs::write(tmp.path().join("README.md"), "dirty on feature").unwrap();
+        assert_eq!(current_branch(tmp.path()), "feature-y");
+        assert!(has_uncommitted_changes(dir).unwrap());
+
+        prepare_worktree(dir, |_| {}).unwrap();
+
+        // Should be on main with clean working tree
+        assert_eq!(current_branch(tmp.path()), "main");
+        assert!(!has_uncommitted_changes(dir).unwrap());
+
+        // Stash should exist
+        let output = Command::new("git")
+            .args(["stash", "list"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let stash_list = String::from_utf8_lossy(&output.stdout);
+        assert!(stash_list.contains("van-damme: auto-stash"));
+    }
+
+    #[test]
+    fn test_prepare_worktree_pulls_upstream_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        add_origin(tmp.path(), bare.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        // Push a new commit directly to the bare origin to simulate upstream changes
+        let pusher = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args([
+                "clone",
+                bare.path().to_str().unwrap(),
+                pusher.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+        std::fs::write(pusher.path().join("upstream.txt"), "from upstream").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "upstream commit"])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["push", "origin", "main"])
+            .current_dir(pusher.path())
+            .output()
+            .unwrap();
+
+        // The local repo should NOT have upstream.txt yet
+        assert!(!tmp.path().join("upstream.txt").exists());
+
+        prepare_worktree(dir, |_| {}).unwrap();
+
+        // After prepare_worktree, the upstream commit should be pulled
+        assert!(tmp.path().join("upstream.txt").exists());
     }
 }
