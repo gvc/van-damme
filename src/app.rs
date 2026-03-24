@@ -846,40 +846,6 @@ impl App {
             frame.render_widget(args_para, chunks[ai_idx]);
         }
 
-        // Recent directories dropdown (rendered over other content)
-        if self.show_recent_dirs && !self.recent_dirs.is_empty() {
-            let dropdown_height = self.recent_dirs.len() as u16 + 2; // +2 for borders
-            let dropdown_area = ratatui::layout::Rect {
-                x: chunks[dir_input_idx].x,
-                y: chunks[dir_input_idx].y + chunks[dir_input_idx].height,
-                width: chunks[dir_input_idx].width,
-                height: dropdown_height.min(7), // max 5 items + 2 borders
-            };
-            frame.render_widget(Clear, dropdown_area);
-            let items: Vec<ratatui::widgets::ListItem> = self
-                .recent_dirs
-                .iter()
-                .enumerate()
-                .map(|(i, d)| {
-                    let style = if Some(i) == self.recent_dir_selected {
-                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
-                    } else {
-                        Style::default().fg(theme::GRAY_DIM)
-                    };
-                    ratatui::widgets::ListItem::new(Line::from(Span::styled(d.as_str(), style)))
-                })
-                .collect();
-            let dropdown = ratatui::widgets::List::new(items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme::ORANGE))
-                    .title(" Recent Directories ")
-                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
-                    .style(Style::default().bg(theme::BG)),
-            );
-            frame.render_widget(dropdown, dropdown_area);
-        }
-
         // Hints + error
         let hint_text = if self.show_recent_dirs {
             "↑/↓: select  |  Enter: confirm  |  Esc: cancel"
@@ -912,6 +878,40 @@ impl App {
             )))
             .alignment(Alignment::Center);
             frame.render_widget(error_para, error_area);
+        }
+
+        // Recent directories dropdown (rendered last so it overlays hints/error)
+        if self.show_recent_dirs && !self.recent_dirs.is_empty() {
+            let dropdown_height = self.recent_dirs.len() as u16 + 2; // +2 for borders
+            let dropdown_area = ratatui::layout::Rect {
+                x: chunks[dir_input_idx].x,
+                y: chunks[dir_input_idx].y + chunks[dir_input_idx].height,
+                width: chunks[dir_input_idx].width,
+                height: dropdown_height.min(7), // max 5 items + 2 borders
+            };
+            frame.render_widget(Clear, dropdown_area);
+            let items: Vec<ratatui::widgets::ListItem> = self
+                .recent_dirs
+                .iter()
+                .enumerate()
+                .map(|(i, d)| {
+                    let style = if Some(i) == self.recent_dir_selected {
+                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
+                    } else {
+                        Style::default().fg(theme::GRAY_DIM)
+                    };
+                    ratatui::widgets::ListItem::new(Line::from(Span::styled(d.as_str(), style)))
+                })
+                .collect();
+            let dropdown = ratatui::widgets::List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::ORANGE))
+                    .title(" Recent Directories ")
+                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+                    .style(Style::default().bg(theme::BG)),
+            );
+            frame.render_widget(dropdown, dropdown_area);
         }
 
         // Place cursor in focused input
