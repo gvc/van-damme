@@ -195,16 +195,9 @@ impl SessionList {
         }
         let session = &self.sessions[idx];
         let name = session.tmux_session_name.clone();
-        let dir = session.directory.clone();
         match tmux::kill_session(&name) {
             Ok(()) => {
-                // Remove worktree directory
-                if let Err(e) = tmux::remove_worktree(&dir, &name) {
-                    self.status_message =
-                        Some(format!("Killed session but failed to remove worktree: {e}"));
-                } else {
-                    self.status_message = Some(format!("Killed session: {name}"));
-                }
+                self.status_message = Some(format!("Killed session: {name}"));
                 // Remove from our DB too
                 let _ = crate::session::remove_session(&name);
                 self.refresh();

@@ -194,19 +194,6 @@ pub fn kill_session(name: &str) -> Result<()> {
     run_tmux(&["kill-session", "-t", name])
 }
 
-/// Remove the worktree directory for a session.
-/// The worktree lives at `<dir>/.claude/worktrees/<name>`.
-pub fn remove_worktree(dir: &str, name: &str) -> Result<()> {
-    let worktree_dir = std::path::PathBuf::from(dir)
-        .join(".claude")
-        .join("worktrees")
-        .join(name);
-    if worktree_dir.exists() {
-        std::fs::remove_dir_all(&worktree_dir)?;
-    }
-    Ok(())
-}
-
 /// Escape a string for safe use as a single shell argument.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -287,30 +274,6 @@ mod tests {
     #[test]
     fn test_shell_escape_empty() {
         assert_eq!(shell_escape(""), "''");
-    }
-
-    #[test]
-    fn test_remove_worktree_removes_directory() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_str().unwrap();
-        let name = "test-session";
-
-        // Create the worktree directory
-        let worktree = tmp.path().join(".claude").join("worktrees").join(name);
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::write(worktree.join("file.txt"), "hello").unwrap();
-        assert!(worktree.exists());
-
-        remove_worktree(dir, name).unwrap();
-        assert!(!worktree.exists());
-    }
-
-    #[test]
-    fn test_remove_worktree_nonexistent_is_ok() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_str().unwrap();
-        // Should not error when the directory doesn't exist
-        assert!(remove_worktree(dir, "nonexistent").is_ok());
     }
 
     #[test]
