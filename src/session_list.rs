@@ -267,13 +267,19 @@ impl SessionList {
                 .sessions
                 .iter()
                 .map(|s| {
-                    let icon_color = match s.state {
-                        SessionState::Working => theme::ORANGE_BRIGHT,
-                        SessionState::WaitingUser => Color::Yellow,
-                        SessionState::Idle => theme::GRAY_DIM,
+                    let (icon, icon_color) = if s.claude_session_id.is_none() {
+                        // Plain tmux session
+                        ("🖥️", theme::GRAY_DIM)
+                    } else {
+                        let color = match s.state {
+                            SessionState::Working => theme::ORANGE_BRIGHT,
+                            SessionState::WaitingUser => Color::Yellow,
+                            SessionState::Idle => theme::GRAY_DIM,
+                        };
+                        (s.state.icon(), color)
                     };
                     let line = Line::from(vec![
-                        Span::styled(s.state.icon(), Style::default().fg(icon_color)),
+                        Span::styled(icon, Style::default().fg(icon_color)),
                         Span::raw(" "),
                         Span::styled(
                             &s.tmux_session_name,

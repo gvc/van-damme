@@ -449,7 +449,13 @@ fn launch_tmux_session(
 
     let _ = progress.send("Creating tmux session...".into());
 
-    tmux::create_plain_session(session_name, directory)?;
+    let tmux_session = tmux::create_plain_session(session_name, directory)?;
+
+    session::add_plain_session(
+        tmux_session.session_id,
+        session_name.to_string(),
+        directory.to_string(),
+    )?;
 
     recent_dirs::record_directory(directory)?;
 

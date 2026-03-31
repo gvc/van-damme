@@ -178,7 +178,7 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
 
     // Select the claude window and focus the claude pane (left)
     run_tmux(&["select-window", "-t", &format!("{session_name}:claude")])?;
-    run_tmux(&["select-pane", "-t", &format!("{session_name}:claude.0")])?;
+    run_tmux(&["select-pane", "-L", "-t", &format!("{session_name}:claude")])?;
 
     Ok(())
 }
@@ -213,7 +213,7 @@ pub fn create_plain_session(name: &str, dir: &str) -> Result<TmuxSession> {
     run_tmux(&["split-window", "-h", "-t", name, "-c", &abs_dir])?;
 
     // Focus the left pane
-    run_tmux(&["select-pane", "-t", &format!("{name}.0")])?;
+    run_tmux(&["select-pane", "-L", "-t", name])?;
 
     // Capture session ID
     let output = Command::new("tmux")
@@ -245,9 +245,14 @@ fn shell_escape(s: &str) -> String {
 }
 
 fn run_tmux(args: &[&str]) -> Result<()> {
-    let status = Command::new("tmux").args(args).status()?;
-    if !status.success() {
-        return Err(eyre!("tmux command failed: tmux {}", args.join(" ")));
+    let output = Command::new("tmux").args(args).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!(
+            "tmux command failed: tmux {} — {}",
+            args.join(" "),
+            stderr.trim()
+        ));
     }
     Ok(())
 }
