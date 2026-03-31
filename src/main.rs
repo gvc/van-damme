@@ -35,6 +35,8 @@ struct LaunchState {
     result_rx: mpsc::Receiver<Result<(), String>>,
     messages: Vec<String>,
     tick: usize,
+    /// If true, this is a plain tmux session (no Claude) — switch to it on success.
+    plain_tmux: bool,
 }
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -102,6 +104,15 @@ fn main() -> Result<()> {
                                     app = App::with_recent_dirs(recent);
                                     screen = Screen::NewTask;
                                 }
+                                SessionListAction::NewTmuxSession => {
+                                    let recent =
+                                        recent_dirs::recent_directories(5).unwrap_or_default();
+                                    app = App::with_recent_dirs_and_mode(
+                                        recent,
+                                        app::FormMode::NewTmuxSession,
+                                    );
+                                    screen = Screen::NewTask;
+                                }
                                 SessionListAction::Attach { session_name } => {
                                     tui::restore()?;
                                     let _ = tmux::switch_to_session(&session_name);
@@ -132,6 +143,13 @@ fn main() -> Result<()> {
                                         prompt,
                                         claude_args,
                                     );
+                                    launch_state = Some(state);
+                                    screen = Screen::Launching;
+                                }
+                                Action::SubmitTmuxSession { title, directory } => {
+                                    let session_name = tmux::sanitize_session_name(&title);
+                                    let state =
+                                        spawn_tmux_launch(session_name, directory);
                                     launch_state = Some(state);
                                     screen = Screen::Launching;
                                 }
@@ -166,9 +184,16 @@ fn main() -> Result<()> {
                         match state.result_rx.try_recv() {
                             Ok(result) => {
                                 let session_name = state.session_name.clone();
+                                let is_plain_tmux = state.plain_tmux;
                                 launch_state = None;
                                 match result {
                                     Ok(()) => {
+                                        if is_plain_tmux {
+                                            // Switch directly to the plain tmux session
+                                            tui::restore()?;
+                                            let _ = tmux::switch_to_session(&session_name);
+                                            terminal = tui::init()?;
+                                        }
                                         session_list.refresh();
                                         session_list.select_by_name(&session_name);
                                         screen = Screen::SessionList;
@@ -290,6 +315,7 @@ fn spawn_launch(
         result_rx,
         messages: Vec::new(),
         tick: 0,
+        plain_tmux: false,
     }
 }
 
@@ -385,6 +411,53 @@ fn launch_session(
     Ok(())
 }
 
+fn spawn_tmux_launch(session_name: String, directory: String) -> LaunchState {
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let name = session_name.clone();
+    thread::spawn(move || {
+        let result = launch_tmux_session(&name, &directory, &progress_tx);
+        let _ = result_tx.send(result.map_err(|e| format!("{e}")));
+    });
+
+    LaunchState {
+        session_name,
+        progress_rx,
+        result_rx,
+        messages: Vec::new(),
+        tick: 0,
+        plain_tmux: true,
+    }
+}
+
+fn launch_tmux_session(
+    session_name: &str,
+    directory: &str,
+    progress: &mpsc::Sender<String>,
+) -> Result<()> {
+    if session_name.is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "Title produces an empty session name"
+        ));
+    }
+
+    if tmux::session_exists(session_name)? {
+        return Err(color_eyre::eyre::eyre!(
+            "tmux session '{session_name}' already exists"
+        ));
+    }
+
+    let _ = progress.send("Creating tmux session...".into());
+
+    tmux::create_plain_session(session_name, directory)?;
+
+    recent_dirs::record_directory(directory)?;
+
+    let _ = progress.send("Session launched".into());
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +513,7 @@ mod tests {
             result_rx: rrx,
             messages: vec!["Step 1 done".into()],
             tick: 0,
+            plain_tmux: false,
         };
         assert_eq!(SPINNER[state.tick % SPINNER.len()], '⠋');
     }
@@ -454,6 +528,7 @@ mod tests {
             result_rx: rrx,
             messages: Vec::new(),
             tick: 0,
+            plain_tmux: false,
         };
 
         ptx.send("Step 1".into()).unwrap();

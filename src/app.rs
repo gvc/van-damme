@@ -123,6 +123,14 @@ fn longest_common_prefix(strings: &[String]) -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormMode {
+    /// Full form: title, directory, git mode, prompt, claude args
+    NewTask,
+    /// Simplified form: title + directory only (plain tmux session)
+    NewTmuxSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitMode {
     Worktree,
     Branch,
@@ -150,11 +158,16 @@ pub enum Action {
         prompt: Option<String>,
         claude_args: Option<String>,
     },
+    SubmitTmuxSession {
+        title: String,
+        directory: String,
+    },
 }
 
 #[derive(Debug)]
 pub struct App {
     pub running: bool,
+    pub form_mode: FormMode,
     pub focused_field: InputField,
     pub title_input: Input,
     pub dir_input: Input,
@@ -177,6 +190,10 @@ impl App {
     }
 
     pub fn with_recent_dirs(recent_dirs: Vec<String>) -> Self {
+        Self::with_recent_dirs_and_mode(recent_dirs, FormMode::NewTask)
+    }
+
+    pub fn with_recent_dirs_and_mode(recent_dirs: Vec<String>, form_mode: FormMode) -> Self {
         let default_dir = recent_dirs.first().cloned().unwrap_or_else(|| {
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -185,6 +202,7 @@ impl App {
 
         Self {
             running: true,
+            form_mode,
             focused_field: InputField::Title,
             title_input: Input::default(),
             dir_input: Input::new(default_dir),
@@ -211,8 +229,9 @@ impl App {
             return self.handle_recent_dirs_key(key);
         }
 
-        // Ctrl+A toggles advanced settings
-        if key.code == KeyCode::Char('a')
+        // Ctrl+A toggles advanced settings (not available in tmux session mode)
+        if self.form_mode == FormMode::NewTask
+            && key.code == KeyCode::Char('a')
             && key
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::CONTROL)
@@ -399,6 +418,13 @@ impl App {
     }
 
     fn next_field(&mut self) {
+        if self.form_mode == FormMode::NewTmuxSession {
+            self.focused_field = match self.focused_field {
+                InputField::Title => InputField::Directory,
+                _ => InputField::Title,
+            };
+            return;
+        }
         self.focused_field = match self.focused_field {
             InputField::Title => InputField::Directory,
             InputField::Directory => {
@@ -428,6 +454,13 @@ impl App {
     }
 
     fn prev_field(&mut self) {
+        if self.form_mode == FormMode::NewTmuxSession {
+            self.focused_field = match self.focused_field {
+                InputField::Directory => InputField::Title,
+                _ => InputField::Directory,
+            };
+            return;
+        }
         self.focused_field = match self.focused_field {
             InputField::Title => {
                 if self.show_advanced {
@@ -474,6 +507,10 @@ impl App {
             return Action::None;
         }
 
+        if self.form_mode == FormMode::NewTmuxSession {
+            return Action::SubmitTmuxSession { title, directory };
+        }
+
         let branch_name = if self.git_mode == GitMode::Branch {
             let name = self.branch_name_input.value().trim().to_string();
             if name.is_empty() {
@@ -511,6 +548,11 @@ impl App {
     }
 
     pub fn draw(&self, frame: &mut Frame) {
+        if self.form_mode == FormMode::NewTmuxSession {
+            self.draw_tmux_session_form(frame);
+            return;
+        }
+
         let area = frame.area();
 
         // Centered form: 90 wide, dynamically sized vertically
@@ -946,6 +988,178 @@ impl App {
                 frame.set_cursor_position(Position::new(cursor_x, cursor_y));
             }
         }
+    }
+
+    fn draw_tmux_session_form(&self, frame: &mut Frame) {
+        let area = frame.area();
+        let form_width = 90u16.min(area.width.saturating_sub(2));
+        // 2 (outer border) + 1 (title label) + 3 (title input) + 1 (dir label) + 3 (dir input) + 1 (hints) = 11
+        let form_height = 11u16.min(area.height.saturating_sub(2));
+        let total_height = form_height + 1; // +1 for error line
+
+        let vertical = Layout::vertical([Constraint::Length(total_height)])
+            .flex(Flex::Center)
+            .split(area);
+        let horizontal = Layout::horizontal([Constraint::Length(form_width)])
+            .flex(Flex::Center)
+            .split(vertical[0]);
+        let outer_area = horizontal[0];
+
+        let outer_chunks =
+            Layout::vertical([Constraint::Length(form_height), Constraint::Length(1)])
+                .split(outer_area);
+        let form_area = outer_chunks[0];
+        let error_area = outer_chunks[1];
+
+        frame.render_widget(Clear, form_area);
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::BG)),
+            form_area,
+        );
+
+        let outer_block = Block::default()
+            .title(" New Tmux Session ")
+            .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme::ORANGE))
+            .style(Style::default().bg(theme::BG));
+        let inner = outer_block.inner(form_area);
+        frame.render_widget(outer_block, form_area);
+
+        let chunks = Layout::vertical([
+            Constraint::Length(1), // Title label
+            Constraint::Length(3), // Title input
+            Constraint::Length(1), // Directory label
+            Constraint::Length(3), // Directory input
+            Constraint::Min(1),   // Hints
+        ])
+        .split(inner);
+
+        // Title label
+        let title_label =
+            Paragraph::new("Title:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
+        frame.render_widget(title_label, chunks[0]);
+
+        // Title input
+        let title_border_color = if self.focused_field == InputField::Title {
+            theme::ORANGE_BRIGHT
+        } else {
+            theme::GRAY
+        };
+        let title_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(title_border_color))
+            .style(Style::default().bg(theme::BG));
+        let title_inner = title_block.inner(chunks[1]);
+        let title_para = Paragraph::new(self.title_input.value())
+            .style(Style::default().fg(theme::TEXT))
+            .block(title_block);
+        frame.render_widget(title_para, chunks[1]);
+
+        // Directory label
+        let dir_label =
+            Paragraph::new("Directory:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
+        frame.render_widget(dir_label, chunks[2]);
+
+        // Directory input
+        let dir_border_color = if self.focused_field == InputField::Directory {
+            theme::ORANGE_BRIGHT
+        } else {
+            theme::GRAY
+        };
+        let dir_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(dir_border_color))
+            .style(Style::default().bg(theme::BG));
+        let dir_inner = dir_block.inner(chunks[3]);
+        let dir_value = self.dir_input.value();
+        let dir_line = if let Some(ref suggestion) = self.dir_suggestion {
+            Line::from(vec![
+                Span::styled(dir_value.to_string(), Style::default().fg(theme::TEXT)),
+                Span::styled(suggestion.as_str(), Style::default().fg(theme::BLUE)),
+            ])
+        } else {
+            Line::from(Span::styled(
+                dir_value.to_string(),
+                Style::default().fg(theme::TEXT),
+            ))
+        };
+        let dir_para = Paragraph::new(dir_line).block(dir_block);
+        frame.render_widget(dir_para, chunks[3]);
+
+        // Hints
+        let hint_text = if self.show_recent_dirs {
+            "↑/↓: select  |  Enter: confirm  |  Esc: cancel"
+        } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
+            if !self.recent_dirs.is_empty() {
+                "Tab/→: complete  |  Ctrl+D: recent dirs  |  Enter: submit  |  Esc: back"
+            } else {
+                "Tab/→: complete  |  Enter: submit  |  Esc: back"
+            }
+        } else if self.focused_field == InputField::Directory && !self.recent_dirs.is_empty() {
+            "Ctrl+D: recent dirs  |  Enter: submit  |  Esc: back"
+        } else {
+            "Tab: next  |  Enter: submit  |  Esc: back"
+        };
+        let hints = Paragraph::new(Line::from(Span::styled(
+            hint_text,
+            Style::default().fg(theme::GRAY_DIM),
+        )))
+        .alignment(Alignment::Center);
+        frame.render_widget(hints, chunks[4]);
+
+        // Error message
+        if let Some(ref err) = self.error_message {
+            let error_para = Paragraph::new(Line::from(Span::styled(
+                format!(" {err} "),
+                Style::default().fg(Color::White).bg(theme::ERROR),
+            )))
+            .alignment(Alignment::Center);
+            frame.render_widget(error_para, error_area);
+        }
+
+        // Recent directories dropdown
+        if self.show_recent_dirs && !self.recent_dirs.is_empty() {
+            let dropdown_height = self.recent_dirs.len() as u16 + 2;
+            let dropdown_area = ratatui::layout::Rect {
+                x: chunks[3].x,
+                y: chunks[3].y + chunks[3].height,
+                width: chunks[3].width,
+                height: dropdown_height.min(7),
+            };
+            frame.render_widget(Clear, dropdown_area);
+            let items: Vec<ratatui::widgets::ListItem> = self
+                .recent_dirs
+                .iter()
+                .enumerate()
+                .map(|(i, d)| {
+                    let style = if Some(i) == self.recent_dir_selected {
+                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
+                    } else {
+                        Style::default().fg(theme::GRAY_DIM)
+                    };
+                    ratatui::widgets::ListItem::new(Line::from(Span::styled(d.as_str(), style)))
+                })
+                .collect();
+            let dropdown = ratatui::widgets::List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::ORANGE))
+                    .title(" Recent Directories ")
+                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+                    .style(Style::default().bg(theme::BG)),
+            );
+            frame.render_widget(dropdown, dropdown_area);
+        }
+
+        // Place cursor
+        let (cursor_input, cursor_area) = match self.focused_field {
+            InputField::Title => (&self.title_input, title_inner),
+            InputField::Directory => (&self.dir_input, dir_inner),
+            _ => (&self.title_input, title_inner),
+        };
+        let visual_cursor = cursor_input.visual_cursor() as u16;
+        frame.set_cursor_position(Position::new(cursor_area.x + visual_cursor, cursor_area.y));
     }
 }
 
@@ -1582,6 +1796,66 @@ mod tests {
     #[test]
     fn test_default_show_advanced_is_false() {
         let app = App::new();
+        assert!(!app.show_advanced);
+    }
+
+    // --- NewTmuxSession mode tests ---
+
+    fn tmux_app() -> App {
+        App::with_recent_dirs_and_mode(Vec::new(), FormMode::NewTmuxSession)
+    }
+
+    #[test]
+    fn test_tmux_mode_default_form_mode() {
+        let app = tmux_app();
+        assert_eq!(app.form_mode, FormMode::NewTmuxSession);
+    }
+
+    #[test]
+    fn test_tmux_mode_tab_cycles_title_directory_only() {
+        let mut app = tmux_app();
+        assert_eq!(app.focused_field, InputField::Title);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Directory);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Title);
+    }
+
+    #[test]
+    fn test_tmux_mode_prev_field_cycles_directory_title_only() {
+        let mut app = tmux_app();
+        assert_eq!(app.focused_field, InputField::Title);
+        app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(app.focused_field, InputField::Directory);
+        app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(app.focused_field, InputField::Title);
+    }
+
+    #[test]
+    fn test_tmux_mode_enter_submits_tmux_session() {
+        let mut app = tmux_app();
+        for ch in "my-session".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        while !app.dir_input.value().is_empty() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        for ch in "/tmp".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        let action = app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, Action::SubmitTmuxSession { .. }));
+        if let Action::SubmitTmuxSession { title, directory } = action {
+            assert_eq!(title, "my-session");
+            assert_eq!(directory, "/tmp");
+        }
+    }
+
+    #[test]
+    fn test_tmux_mode_ctrl_a_does_not_toggle_advanced() {
+        let mut app = tmux_app();
+        app.handle_key(ctrl_a());
         assert!(!app.show_advanced);
     }
 }

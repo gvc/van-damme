@@ -183,6 +183,51 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
     Ok(())
 }
 
+/// Create a plain tmux session (no Claude) with a single window and a vertical split.
+/// Both panes start in the given directory.
+pub fn create_plain_session(name: &str, dir: &str) -> Result<TmuxSession> {
+    let abs_dir = std::path::Path::new(dir)
+        .canonicalize()
+        .map_err(|e| eyre!("Cannot resolve directory '{dir}': {e}"))?
+        .to_string_lossy()
+        .to_string();
+
+    // Create detached session starting in the directory
+    let output = Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-c",
+            &abs_dir,
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("Failed to create tmux session '{name}': {stderr}"));
+    }
+
+    // Split the window vertically
+    run_tmux(&["split-window", "-h", "-t", name, "-c", &abs_dir])?;
+
+    // Focus the left pane
+    run_tmux(&["select-pane", "-t", &format!("{name}.0")])?;
+
+    // Capture session ID
+    let output = Command::new("tmux")
+        .args(["display-message", "-t", name, "-p", "#{session_id}"])
+        .output()?;
+    if !output.status.success() {
+        return Err(eyre!("Failed to get session ID for '{name}'"));
+    }
+
+    let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    Ok(TmuxSession { session_id })
+}
+
 /// Switch the current tmux client to the given session.
 /// Use this instead of attach-session when already inside tmux.
 pub fn switch_to_session(name: &str) -> Result<()> {

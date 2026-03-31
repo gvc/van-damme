@@ -16,6 +16,7 @@ pub enum SessionListAction {
     None,
     Quit,
     NewTask,
+    NewTmuxSession,
     Attach { session_name: String },
 }
 
@@ -117,6 +118,7 @@ impl SessionList {
         match key.code {
             KeyCode::Char('q') => SessionListAction::Quit,
             KeyCode::Char('n') => SessionListAction::NewTask,
+            KeyCode::Char('t') => SessionListAction::NewTmuxSession,
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_up();
                 SessionListAction::None
@@ -298,7 +300,7 @@ impl SessionList {
         }
 
         let hints = Paragraph::new(Line::from(Span::styled(
-            "j/k: navigate  |  a: attach  |  x: kill  |  n: new  |  q: quit",
+            "j/k: navigate  |  a: attach  |  x: kill  |  n: new task  |  t: new tmux  |  q: quit",
             Style::default().fg(theme::GRAY_DIM),
         )))
         .alignment(Alignment::Center);
@@ -500,6 +502,13 @@ mod tests {
         assert_eq!(action, SessionListAction::None);
         assert_eq!(list.confirm_kill, Some(0));
         assert!(list.status_message.as_ref().unwrap().contains("confirm"));
+    }
+
+    #[test]
+    fn test_t_new_tmux_session() {
+        let mut list = SessionList::new(sample_sessions());
+        let action = list.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(action, SessionListAction::NewTmuxSession);
     }
 
     #[test]
