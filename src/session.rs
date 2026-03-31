@@ -14,9 +14,9 @@ pub enum SessionState {
 impl SessionState {
     pub fn icon(&self) -> &'static str {
         match self {
-            SessionState::Working => "⚙",
+            SessionState::Working => "🔧",
             SessionState::WaitingUser => "⏳",
-            SessionState::Idle => "●",
+            SessionState::Idle => "💤",
         }
     }
 }
@@ -168,16 +168,26 @@ pub fn add_session(
         &path,
         tmux_session_id,
         tmux_session_name,
-        claude_session_id,
+        Some(claude_session_id),
         directory,
     )
+}
+
+/// Add a plain tmux session record (no Claude) and persist to disk.
+pub fn add_plain_session(
+    tmux_session_id: String,
+    tmux_session_name: String,
+    directory: String,
+) -> Result<SessionRecord> {
+    let path = default_db_path()?;
+    add_session_to(&path, tmux_session_id, tmux_session_name, None, directory)
 }
 
 fn add_session_to(
     path: &Path,
     tmux_session_id: String,
     tmux_session_name: String,
-    claude_session_id: String,
+    claude_session_id: Option<String>,
     directory: String,
 ) -> Result<SessionRecord> {
     let mut db = load_db_from(path)?;
@@ -189,7 +199,7 @@ fn add_session_to(
     let record = SessionRecord {
         tmux_session_id,
         tmux_session_name,
-        claude_session_id: Some(claude_session_id),
+        claude_session_id,
         directory,
         created_at,
         state: SessionState::Idle,
@@ -257,7 +267,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "test-session".to_string(),
-            "test-uuid-123".to_string(),
+            Some("test-uuid-123".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -279,7 +289,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "first".to_string(),
-            "uuid-first".to_string(),
+            Some("uuid-first".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -287,7 +297,7 @@ mod tests {
             &path,
             "$2".to_string(),
             "second".to_string(),
-            "uuid-second".to_string(),
+            Some("uuid-second".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -303,7 +313,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "first".to_string(),
-            "uuid-first".to_string(),
+            Some("uuid-first".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -311,7 +321,7 @@ mod tests {
             &path,
             "$2".to_string(),
             "second".to_string(),
-            "uuid-second".to_string(),
+            Some("uuid-second".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -336,7 +346,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "first".to_string(),
-            "uuid-first".to_string(),
+            Some("uuid-first".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -344,7 +354,7 @@ mod tests {
             &path,
             "$2".to_string(),
             "second".to_string(),
-            "uuid-second".to_string(),
+            Some("uuid-second".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -363,7 +373,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "first".to_string(),
-            "uuid-first".to_string(),
+            Some("uuid-first".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -400,7 +410,7 @@ mod tests {
             &path,
             "$1".to_string(),
             "my-session".to_string(),
-            "uuid-1".to_string(),
+            Some("uuid-1".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
@@ -441,7 +451,7 @@ mod tests {
             &path,
             "".to_string(),
             "my-session".to_string(),
-            "uuid-1".to_string(),
+            Some("uuid-1".to_string()),
             "/tmp".to_string(),
         )
         .unwrap();
