@@ -52,6 +52,31 @@ fn test_process_hook_writes_to_debug_log() {
 }
 
 #[test]
+fn test_add_dir_with_explicit_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_string_lossy().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+        .args(["add-dir", &dir])
+        .output()
+        .expect("failed to run binary");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("Added"));
+    assert!(stdout.contains("recent directories"));
+}
+
+#[test]
+fn test_add_dir_defaults_to_cwd() {
+    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+        .arg("add-dir")
+        .output()
+        .expect("failed to run binary");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("Added"));
+}
+
+#[test]
 fn test_process_hook_rejects_invalid_json() {
     let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
         .arg("process-hook")
