@@ -194,14 +194,7 @@ pub fn create_plain_session(name: &str, dir: &str) -> Result<TmuxSession> {
 
     // Create detached session starting in the directory
     let output = Command::new("tmux")
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            name,
-            "-c",
-            &abs_dir,
-        ])
+        .args(["new-session", "-d", "-s", name, "-c", &abs_dir])
         .stdin(std::process::Stdio::null())
         .output()?;
     if !output.status.success() {

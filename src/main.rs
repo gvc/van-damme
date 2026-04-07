@@ -50,6 +50,20 @@ fn main() -> Result<()> {
     if args.get(1).is_some_and(|a| a == "process-hook") {
         return process_hook::run();
     }
+    if args.get(1).is_some_and(|a| a == "add-dir") {
+        let dir = args.get(2).cloned().unwrap_or_else(|| {
+            std::env::current_dir()
+                .expect("could not determine current directory")
+                .to_string_lossy()
+                .to_string()
+        });
+        let abs = std::path::Path::new(&dir)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(&dir));
+        recent_dirs::record_directory(&abs.to_string_lossy())?;
+        println!("Added {} to recent directories", abs.display());
+        return Ok(());
+    }
 
     color_eyre::install()?;
 
@@ -64,7 +78,7 @@ fn main() -> Result<()> {
         .collect();
 
     let mut session_list = SessionList::new(alive);
-    let recent_dirs = recent_dirs::recent_directories(5).unwrap_or_default();
+    let recent_dirs = recent_dirs::recent_directories(usize::MAX).unwrap_or_default();
     let mut app = App::with_recent_dirs(recent_dirs.clone());
     let mut screen = Screen::SessionList;
     let mut launch_state: Option<LaunchState> = None;
@@ -148,8 +162,7 @@ fn main() -> Result<()> {
                                 }
                                 Action::SubmitTmuxSession { title, directory } => {
                                     let session_name = tmux::sanitize_session_name(&title);
-                                    let state =
-                                        spawn_tmux_launch(session_name, directory);
+                                    let state = spawn_tmux_launch(session_name, directory);
                                     launch_state = Some(state);
                                     screen = Screen::Launching;
                                 }
