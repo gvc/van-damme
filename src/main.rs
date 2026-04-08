@@ -114,13 +114,13 @@ fn main() -> Result<()> {
                                 }
                                 SessionListAction::NewTask => {
                                     let recent =
-                                        recent_dirs::recent_directories(5).unwrap_or_default();
+                                        recent_dirs::recent_directories(usize::MAX).unwrap_or_default();
                                     app = App::with_recent_dirs(recent);
                                     screen = Screen::NewTask;
                                 }
                                 SessionListAction::NewTmuxSession => {
                                     let recent =
-                                        recent_dirs::recent_directories(5).unwrap_or_default();
+                                        recent_dirs::recent_directories(usize::MAX).unwrap_or_default();
                                     app = App::with_recent_dirs_and_mode(
                                         recent,
                                         app::FormMode::NewTmuxSession,
