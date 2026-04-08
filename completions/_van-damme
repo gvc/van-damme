@@ -1,0 +1,32 @@
+#compdef van-damme
+
+_van-damme() {
+    local -a subcommands
+    subcommands=(
+        'process-hook:Handle Claude Code hook events from stdin'
+        'add-dir:Add a directory to the recent directories list'
+    )
+
+    _arguments -s \
+        '(-V --version)'{-V,--version}'[Print version information]' \
+        '1:subcommand:->subcmd' \
+        '*::arg:->args'
+
+    case "$state" in
+        subcmd)
+            _describe 'subcommand' subcommands
+            ;;
+        args)
+            case "$words[1]" in
+                add-dir)
+                    _arguments '1:directory:_directories'
+                    ;;
+                process-hook)
+                    # No arguments — reads from stdin
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_van-damme "$@"
