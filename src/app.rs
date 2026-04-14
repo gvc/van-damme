@@ -181,6 +181,7 @@ pub struct App {
     pub recent_dir_selected: Option<usize>,
     pub recent_dir_scroll: usize,
     pub show_recent_dirs: bool,
+    pub recent_dir_query: String,
     pub show_advanced: bool,
 }
 
@@ -217,6 +218,7 @@ impl App {
             recent_dir_selected: None,
             recent_dir_scroll: 0,
             show_recent_dirs: false,
+            recent_dir_query: String::new(),
             show_advanced: false,
         }
     }
@@ -302,6 +304,7 @@ impl App {
                     self.show_recent_dirs = true;
                     self.recent_dir_selected = Some(0);
                     self.recent_dir_scroll = 0;
+                    self.recent_dir_query.clear();
                     return Action::None;
                 }
 
@@ -341,6 +344,19 @@ impl App {
     /// Maximum number of items visible in the recent-dirs dropdown.
     const RECENT_DIRS_VISIBLE: usize = 10;
 
+    fn filtered_recent_dirs(&self) -> Vec<&str> {
+        if self.recent_dir_query.is_empty() {
+            self.recent_dirs.iter().map(|s| s.as_str()).collect()
+        } else {
+            let q = self.recent_dir_query.to_lowercase();
+            self.recent_dirs
+                .iter()
+                .filter(|d| d.to_lowercase().contains(&q))
+                .map(|s| s.as_str())
+                .collect()
+        }
+    }
+
     fn adjust_recent_dir_scroll(&mut self) {
         if let Some(sel) = self.recent_dir_selected {
             let visible = Self::RECENT_DIRS_VISIBLE;
@@ -349,6 +365,8 @@ impl App {
             } else if sel >= self.recent_dir_scroll + visible {
                 self.recent_dir_scroll = sel + 1 - visible;
             }
+        } else {
+            self.recent_dir_scroll = 0;
         }
     }
 
@@ -358,37 +376,37 @@ impl App {
                 self.show_recent_dirs = false;
                 self.recent_dir_selected = None;
                 self.recent_dir_scroll = 0;
+                self.recent_dir_query.clear();
                 Action::None
             }
             KeyCode::Up | KeyCode::BackTab => {
-                if let Some(i) = self.recent_dir_selected {
-                    if i > 0 {
-                        self.recent_dir_selected = Some(i - 1);
-                    } else {
-                        self.recent_dir_selected = Some(self.recent_dirs.len() - 1);
-                    }
+                let n = self.filtered_recent_dirs().len();
+                if n > 0 {
+                    self.recent_dir_selected = Some(match self.recent_dir_selected {
+                        Some(i) if i > 0 => i - 1,
+                        _ => n - 1,
+                    });
                 }
                 self.adjust_recent_dir_scroll();
                 Action::None
             }
             KeyCode::Down | KeyCode::Tab => {
-                if let Some(i) = self.recent_dir_selected {
-                    if i < self.recent_dirs.len() - 1 {
-                        self.recent_dir_selected = Some(i + 1);
-                    } else {
-                        self.recent_dir_selected = Some(0);
-                    }
+                let n = self.filtered_recent_dirs().len();
+                if n > 0 {
+                    self.recent_dir_selected = Some(match self.recent_dir_selected {
+                        Some(i) if i < n - 1 => i + 1,
+                        _ => 0,
+                    });
                 }
                 self.adjust_recent_dir_scroll();
                 Action::None
             }
             KeyCode::Enter => {
-                if let Some(i) = self.recent_dir_selected
-                    && let Some(dir) = self.recent_dirs.get(i)
-                {
-                    let dir = dir.clone();
+                let selected = self
+                    .recent_dir_selected
+                    .and_then(|i| self.filtered_recent_dirs().get(i).map(|s| s.to_string()));
+                if let Some(dir) = selected {
                     self.dir_input = Input::new(dir.clone());
-                    // Move cursor to end
                     for _ in 0..dir.len() {
                         self.dir_input
                             .handle_event(&crossterm::event::Event::Key(KeyEvent::new(
@@ -400,6 +418,21 @@ impl App {
                 }
                 self.show_recent_dirs = false;
                 self.recent_dir_selected = None;
+                self.recent_dir_scroll = 0;
+                self.recent_dir_query.clear();
+                Action::None
+            }
+            KeyCode::Backspace => {
+                self.recent_dir_query.pop();
+                let n = self.filtered_recent_dirs().len();
+                self.recent_dir_selected = if n > 0 { Some(0) } else { None };
+                self.recent_dir_scroll = 0;
+                Action::None
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.recent_dir_query.push(c);
+                let n = self.filtered_recent_dirs().len();
+                self.recent_dir_selected = if n > 0 { Some(0) } else { None };
                 self.recent_dir_scroll = 0;
                 Action::None
             }
@@ -921,7 +954,7 @@ impl App {
 
         // Hints + error
         let hint_text = if self.show_recent_dirs {
-            "↑/↓: select  |  Enter: confirm  |  Esc: cancel"
+            "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::GitMode {
             "←/→: toggle  |  Tab: next  |  Ctrl+A: basic  |  Enter: submit  |  Esc: quit"
         } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
@@ -955,7 +988,8 @@ impl App {
 
         // Recent directories dropdown (rendered last so it overlays hints/error)
         if self.show_recent_dirs && !self.recent_dirs.is_empty() {
-            let visible = self.recent_dirs.len().min(Self::RECENT_DIRS_VISIBLE);
+            let filtered = self.filtered_recent_dirs();
+            let visible = filtered.len().min(Self::RECENT_DIRS_VISIBLE);
             let dropdown_height = visible as u16 + 2; // +2 for borders
             let dropdown_area = ratatui::layout::Rect {
                 x: chunks[dir_input_idx].x,
@@ -964,8 +998,7 @@ impl App {
                 height: dropdown_height,
             };
             frame.render_widget(Clear, dropdown_area);
-            let items: Vec<ratatui::widgets::ListItem> = self
-                .recent_dirs
+            let items: Vec<ratatui::widgets::ListItem> = filtered
                 .iter()
                 .enumerate()
                 .skip(self.recent_dir_scroll)
@@ -976,14 +1009,23 @@ impl App {
                     } else {
                         Style::default().fg(theme::GRAY_DIM)
                     };
-                    ratatui::widgets::ListItem::new(Line::from(Span::styled(d.as_str(), style)))
+                    ratatui::widgets::ListItem::new(Line::from(Span::styled(*d, style)))
                 })
                 .collect();
-            let title = format!(
-                " Recent Directories ({}/{}) ",
-                self.recent_dir_selected.map_or(0, |i| i + 1),
-                self.recent_dirs.len()
-            );
+            let title = if self.recent_dir_query.is_empty() {
+                format!(
+                    " Recent Directories ({}/{}) ",
+                    self.recent_dir_selected.map_or(0, |i| i + 1),
+                    filtered.len()
+                )
+            } else {
+                format!(
+                    " > {}  ({}/{}) ",
+                    self.recent_dir_query,
+                    self.recent_dir_selected.map_or(0, |i| i + 1),
+                    filtered.len()
+                )
+            };
             let dropdown = ratatui::widgets::List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -1128,7 +1170,7 @@ impl App {
 
         // Hints
         let hint_text = if self.show_recent_dirs {
-            "↑/↓: select  |  Enter: confirm  |  Esc: cancel"
+            "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
             if !self.recent_dirs.is_empty() {
                 "Tab/→: complete  |  Ctrl+D: recent dirs  |  Enter: submit  |  Esc: back"
@@ -1159,7 +1201,8 @@ impl App {
 
         // Recent directories dropdown
         if self.show_recent_dirs && !self.recent_dirs.is_empty() {
-            let visible = self.recent_dirs.len().min(Self::RECENT_DIRS_VISIBLE);
+            let filtered = self.filtered_recent_dirs();
+            let visible = filtered.len().min(Self::RECENT_DIRS_VISIBLE);
             let dropdown_height = visible as u16 + 2;
             let dropdown_area = ratatui::layout::Rect {
                 x: chunks[3].x,
@@ -1168,8 +1211,7 @@ impl App {
                 height: dropdown_height,
             };
             frame.render_widget(Clear, dropdown_area);
-            let items: Vec<ratatui::widgets::ListItem> = self
-                .recent_dirs
+            let items: Vec<ratatui::widgets::ListItem> = filtered
                 .iter()
                 .enumerate()
                 .skip(self.recent_dir_scroll)
@@ -1180,14 +1222,23 @@ impl App {
                     } else {
                         Style::default().fg(theme::GRAY_DIM)
                     };
-                    ratatui::widgets::ListItem::new(Line::from(Span::styled(d.as_str(), style)))
+                    ratatui::widgets::ListItem::new(Line::from(Span::styled(*d, style)))
                 })
                 .collect();
-            let title = format!(
-                " Recent Directories ({}/{}) ",
-                self.recent_dir_selected.map_or(0, |i| i + 1),
-                self.recent_dirs.len()
-            );
+            let title = if self.recent_dir_query.is_empty() {
+                format!(
+                    " Recent Directories ({}/{}) ",
+                    self.recent_dir_selected.map_or(0, |i| i + 1),
+                    filtered.len()
+                )
+            } else {
+                format!(
+                    " > {}  ({}/{}) ",
+                    self.recent_dir_query,
+                    self.recent_dir_selected.map_or(0, |i| i + 1),
+                    filtered.len()
+                )
+            };
             let dropdown = ratatui::widgets::List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -1765,6 +1816,104 @@ mod tests {
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(app.recent_dir_scroll, 0);
         assert_eq!(app.dir_input.value(), "/dir12");
+    }
+
+    #[test]
+    fn test_recent_dirs_fuzzy_filter_narrows_list() {
+        let dirs = vec![
+            "/home/user/projects".to_string(),
+            "/home/user/downloads".to_string(),
+            "/tmp/sandbox".to_string(),
+        ];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+
+        // Type "proj" — should match only /home/user/projects
+        for c in "proj".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.recent_dir_query, "proj");
+        assert_eq!(app.filtered_recent_dirs(), vec!["/home/user/projects"]);
+        assert_eq!(app.recent_dir_selected, Some(0));
+    }
+
+    #[test]
+    fn test_recent_dirs_fuzzy_filter_case_insensitive() {
+        let dirs = vec!["/home/user/Projects".to_string(), "/tmp".to_string()];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+        for c in "PROJ".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.filtered_recent_dirs(), vec!["/home/user/Projects"]);
+    }
+
+    #[test]
+    fn test_recent_dirs_fuzzy_backspace_expands_list() {
+        let dirs = vec![
+            "/home/user/projects".to_string(),
+            "/home/user/downloads".to_string(),
+        ];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+        for c in "proj".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.filtered_recent_dirs().len(), 1);
+        // Backspace back to empty — all dirs visible
+        for _ in 0..4 {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        assert!(app.recent_dir_query.is_empty());
+        assert_eq!(app.filtered_recent_dirs().len(), 2);
+    }
+
+    #[test]
+    fn test_recent_dirs_fuzzy_enter_selects_filtered() {
+        let dirs = vec![
+            "/home/user/projects".to_string(),
+            "/home/user/downloads".to_string(),
+        ];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+        for c in "down".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        app.handle_key(key(KeyCode::Enter));
+        assert!(!app.show_recent_dirs);
+        assert_eq!(app.dir_input.value(), "/home/user/downloads");
+        assert!(app.recent_dir_query.is_empty());
+    }
+
+    #[test]
+    fn test_recent_dirs_fuzzy_esc_clears_query() {
+        let dirs = vec!["/tmp".to_string()];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+        for c in "foo".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.show_recent_dirs);
+        assert!(app.recent_dir_query.is_empty());
+    }
+
+    #[test]
+    fn test_recent_dirs_fuzzy_no_match_selection_is_none() {
+        let dirs = vec!["/home/user/projects".to_string()];
+        let mut app = App::with_recent_dirs(dirs);
+        app.focused_field = InputField::Directory;
+        app.handle_key(ctrl_d());
+        for c in "zzz_no_match".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.filtered_recent_dirs().len(), 0);
+        assert_eq!(app.recent_dir_selected, None);
     }
 
     #[test]
