@@ -261,7 +261,9 @@ impl App {
                     && self.dir_suggestion.is_some()
                     && self.cursor_at_end() =>
             {
-                self.complete_directory();
+                if !self.complete_directory() {
+                    self.next_field();
+                }
                 Action::None
             }
             KeyCode::Tab | KeyCode::Down => {
@@ -409,9 +411,14 @@ impl App {
         self.dir_input.visual_cursor() >= self.dir_input.value().len()
     }
 
-    fn complete_directory(&mut self) {
+    /// Attempt to complete the directory input. Returns true if progress was made
+    /// (input changed), false if no progress (e.g. already at a fully-expanded path).
+    fn complete_directory(&mut self) -> bool {
         let current = self.dir_input.value().to_string();
         if let Some((completed, _suggestion)) = complete_path(&current) {
+            if completed == current {
+                return false;
+            }
             self.dir_input = Input::new(completed.clone());
             // Move cursor to end
             let len = completed.len();
@@ -423,6 +430,9 @@ impl App {
                     )));
             }
             self.update_dir_suggestion();
+            true
+        } else {
+            false
         }
     }
 
@@ -1544,6 +1554,26 @@ mod tests {
         app.handle_key(key(KeyCode::Right));
         // Cursor should have moved (passed through to input handler)
         assert!(app.dir_input.visual_cursor() > cursor_before || app.dir_suggestion.is_none());
+    }
+
+    #[test]
+    fn test_tab_no_progress_moves_to_next_field() {
+        // When complete_directory makes no progress (completed == current input),
+        // Tab should fall through to next_field instead of silently eating the keypress.
+        let mut app = App::new();
+        app.focused_field = InputField::Directory;
+        // Use a nonexistent path so complete_path returns None → complete_directory
+        // returns false → Tab must move field. We also set dir_suggestion manually
+        // to trigger the Tab guard condition.
+        app.dir_input = Input::new("/nonexistent_abc_xyz_123/".to_string());
+        for _ in 0..30 {
+            app.dir_input
+                .handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
+        }
+        app.dir_suggestion = Some("ghost".to_string());
+        app.handle_key(key(KeyCode::Tab));
+        // complete_path returns None → complete_directory returns false → next_field called
+        assert_eq!(app.focused_field, InputField::Prompt);
     }
 
     #[test]
