@@ -261,7 +261,8 @@ impl App {
             KeyCode::Tab
                 if self.focused_field == InputField::Directory
                     && self.dir_suggestion.is_some()
-                    && self.cursor_at_end() =>
+                    && self.cursor_at_end()
+                    && !self.dir_input.value().ends_with('/') =>
             {
                 if !self.complete_directory() {
                     self.next_field();
@@ -1605,6 +1606,24 @@ mod tests {
         app.handle_key(key(KeyCode::Right));
         // Cursor should have moved (passed through to input handler)
         assert!(app.dir_input.visual_cursor() > cursor_before || app.dir_suggestion.is_none());
+    }
+
+    #[test]
+    fn test_tab_at_trailing_slash_moves_to_next_field() {
+        // When input ends with '/' (user is already at a complete dir path),
+        // Tab must move to next field regardless of dir_suggestion.
+        let mut app = App::new();
+        app.focused_field = InputField::Directory;
+        // /tmp/ is a valid dir with children — dir_suggestion will be set
+        app.dir_input = Input::new("/tmp/".to_string());
+        for _ in 0..6 {
+            app.dir_input
+                .handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
+        }
+        app.update_dir_suggestion();
+        // Even if suggestion exists, Tab at trailing '/' must go to next field
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Prompt);
     }
 
     #[test]
