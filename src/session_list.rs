@@ -362,7 +362,7 @@ impl SessionList {
                         } else {
                             let line = Line::from(vec![Span::styled(
                                 format!("  {dir}"),
-                                Style::default().fg(theme::GRAY_DIM),
+                                Style::default().fg(theme::CYAN_VIVID),
                             )]);
                             ListItem::new(line)
                         }
