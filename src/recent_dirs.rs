@@ -45,7 +45,28 @@ pub fn record_directory(directory: &str) -> Result<()> {
     record_directory_to(&path, directory)
 }
 
+/// Normalize a directory path by stripping all trailing slashes (unless root "/").
+fn normalize_dir(directory: &str) -> String {
+    let trimmed = directory.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Returns true if a directory should be excluded from the listing.
+fn is_excluded_dir(directory: &str) -> bool {
+    directory.starts_with("/private") || directory.contains("/.claude/")
+}
+
 fn record_directory_to(path: &Path, directory: &str) -> Result<()> {
+    let normalized = normalize_dir(directory);
+
+    if is_excluded_dir(&normalized) {
+        return Ok(());
+    }
+
     let mut db = load_db_from(path)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -53,11 +74,11 @@ fn record_directory_to(path: &Path, directory: &str) -> Result<()> {
         .as_secs();
 
     // Update timestamp if exists, otherwise add new entry
-    if let Some(entry) = db.directories.iter_mut().find(|e| e.path == directory) {
+    if let Some(entry) = db.directories.iter_mut().find(|e| e.path == normalized) {
         entry.last_used = now;
     } else {
         db.directories.push(DirEntry {
-            path: directory.to_string(),
+            path: normalized,
             last_used: now,
         });
     }
@@ -80,8 +101,12 @@ fn recent_directories_from(path: &Path, limit: usize) -> Result<Vec<String>> {
     let mut seen = HashSet::new();
     let mut dirs = Vec::new();
     for e in entries {
-        if seen.insert(e.path.clone()) {
-            dirs.push(e.path);
+        let normalized = normalize_dir(&e.path);
+        if is_excluded_dir(&normalized) {
+            continue;
+        }
+        if seen.insert(normalized.clone()) {
+            dirs.push(normalized);
             if dirs.len() >= limit {
                 break;
             }
@@ -228,5 +253,86 @@ mod tests {
         let deserialized: RecentDirsDb = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.directories.len(), 1);
         assert_eq!(deserialized.directories[0], db.directories[0]);
+    }
+
+    #[test]
+    fn test_normalize_trailing_slashes() {
+        assert_eq!(normalize_dir("/home/user/project///"), "/home/user/project");
+        assert_eq!(normalize_dir("/home/user/project/"), "/home/user/project");
+        assert_eq!(normalize_dir("/home/user/project"), "/home/user/project");
+        assert_eq!(normalize_dir("/"), "/");
+        assert_eq!(normalize_dir("///"), "/");
+    }
+
+    #[test]
+    fn test_record_normalizes_trailing_slashes() {
+        let (_tmp, path) = temp_db_path();
+        record_directory_to(&path, "/home/user/project///").unwrap();
+
+        let dirs = recent_directories_from(&path, 5).unwrap();
+        assert_eq!(dirs, vec!["/home/user/project"]);
+    }
+
+    #[test]
+    fn test_record_merges_slash_variants() {
+        let (_tmp, path) = temp_db_path();
+        record_directory_to(&path, "/home/user/project").unwrap();
+        record_directory_to(&path, "/home/user/project/").unwrap();
+        record_directory_to(&path, "/home/user/project///").unwrap();
+
+        let db = load_db_from(&path).unwrap();
+        assert_eq!(db.directories.len(), 1);
+        assert_eq!(db.directories[0].path, "/home/user/project");
+    }
+
+    #[test]
+    fn test_excludes_claude_directories() {
+        let (_tmp, path) = temp_db_path();
+        record_directory_to(&path, "/home/user/project/.claude/worktrees/my-branch").unwrap();
+        record_directory_to(&path, "/home/user/project").unwrap();
+
+        let dirs = recent_directories_from(&path, 5).unwrap();
+        assert_eq!(dirs, vec!["/home/user/project"]);
+    }
+
+    #[test]
+    fn test_excludes_private_directories() {
+        let (_tmp, path) = temp_db_path();
+        record_directory_to(&path, "/private/var/folders/xd/something").unwrap();
+        record_directory_to(&path, "/home/user/project").unwrap();
+
+        let dirs = recent_directories_from(&path, 5).unwrap();
+        assert_eq!(dirs, vec!["/home/user/project"]);
+    }
+
+    #[test]
+    fn test_retrieval_filters_existing_excluded_entries() {
+        let (_tmp, path) = temp_db_path();
+        // Simulate pre-existing bad entries in DB
+        let db = RecentDirsDb {
+            directories: vec![
+                DirEntry {
+                    path: "/private/var/tmp/something".to_string(),
+                    last_used: 300,
+                },
+                DirEntry {
+                    path: "/home/user/.claude/worktrees/branch".to_string(),
+                    last_used: 200,
+                },
+                DirEntry {
+                    path: "/home/user/project////////".to_string(),
+                    last_used: 100,
+                },
+                DirEntry {
+                    path: "/home/user/project".to_string(),
+                    last_used: 50,
+                },
+            ],
+        };
+        save_db_to(&path, &db).unwrap();
+
+        let dirs = recent_directories_from(&path, 10).unwrap();
+        // Should only have one entry: normalized, deduped, no excluded dirs
+        assert_eq!(dirs, vec!["/home/user/project"]);
     }
 }
