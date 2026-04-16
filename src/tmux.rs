@@ -117,7 +117,7 @@ pub fn create_session(
     Ok(TmuxSession { session_id })
 }
 
-/// Create the editor window + split pane for an existing tmux session.
+/// Add a terminal split pane to the right of Claude in an existing tmux session.
 /// Called when Claude's SessionStart hook fires, so the worktree is guaranteed to exist.
 pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
     let abs_dir = std::path::Path::new(directory)
@@ -130,54 +130,33 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
     let worktree_path = std::path::Path::new(&worktree_dir);
 
     // Use worktree dir if it exists, otherwise fall back to project dir
-    let editor_dir = if worktree_path.exists() {
+    let pane_dir = if worktree_path.exists() {
         &worktree_dir
     } else {
         &abs_dir
     };
 
-    // Split claude window horizontally to add a terminal pane
+    // Split claude window horizontally to add a terminal pane on the right
     run_tmux(&[
         "split-window",
         "-h",
         "-t",
         &format!("{session_name}:claude"),
         "-c",
-        editor_dir,
+        pane_dir,
     ])?;
 
-    // Create editor window with vim
-    run_tmux(&[
-        "new-window",
-        "-t",
-        session_name,
-        "-n",
-        "editor",
-        "-c",
-        editor_dir,
-    ])?;
-
-    // Open vim in editor window
-    run_tmux(&[
-        "send-keys",
-        "-t",
-        &format!("{session_name}:editor"),
-        "vim .",
-        "Enter",
-    ])?;
-
-    // Split editor window horizontally
+    // Split the right pane vertically to get two stacked panes on the right
     run_tmux(&[
         "split-window",
-        "-h",
+        "-v",
         "-t",
-        &format!("{session_name}:editor"),
+        &format!("{session_name}:claude"),
         "-c",
-        editor_dir,
+        pane_dir,
     ])?;
 
-    // Select the claude window and focus the claude pane (left)
-    run_tmux(&["select-window", "-t", &format!("{session_name}:claude")])?;
+    // Focus back on the claude pane (left)
     run_tmux(&["select-pane", "-L", "-t", &format!("{session_name}:claude")])?;
 
     Ok(())
