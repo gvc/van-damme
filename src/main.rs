@@ -272,7 +272,7 @@ fn draw_launching(frame: &mut ratatui::Frame, state: &LaunchState) {
         .iter()
         .map(|msg| {
             Line::from(vec![
-                Span::styled("  ✓ ", Style::default().fg(theme::ORANGE)),
+                Span::styled("  ✓ ", Style::default().fg(theme::GREEN)),
                 Span::styled(msg.clone(), Style::default().fg(theme::TEXT)),
             ])
         })

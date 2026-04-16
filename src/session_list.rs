@@ -273,7 +273,7 @@ impl SessionList {
                     } else {
                         let color = match s.state {
                             SessionState::Working => theme::ORANGE_BRIGHT,
-                            SessionState::WaitingUser => Color::Yellow,
+                            SessionState::WaitingUser => theme::CYAN,
                             SessionState::Idle => theme::GRAY_DIM,
                         };
                         (s.state.icon(), color)
@@ -315,7 +315,9 @@ impl SessionList {
         if let Some(ref msg) = self.status_message {
             let bg = if self.confirm_kill.is_some() {
                 theme::ORANGE
-            } else if msg.starts_with("Kill cancelled") || msg.starts_with("Killed session") {
+            } else if msg.starts_with("Killed session") {
+                theme::GREEN
+            } else if msg.starts_with("Kill cancelled") {
                 theme::GRAY
             } else {
                 theme::ERROR
