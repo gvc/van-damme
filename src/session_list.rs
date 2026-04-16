@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
@@ -20,9 +22,20 @@ pub enum SessionListAction {
     Attach { session_name: String },
 }
 
+/// A row in the display list — either a group header or a selectable session.
+#[derive(Debug, Clone)]
+enum DisplayRow {
+    /// Non-selectable directory group header.
+    GroupHeader(String),
+    /// Selectable session row. Stores index into `self.sessions`.
+    Session(usize),
+}
+
 #[derive(Debug)]
 pub struct SessionList {
     pub sessions: Vec<SessionRecord>,
+    /// Display rows (headers + session items), rebuilt on refresh.
+    display_rows: Vec<DisplayRow>,
     pub list_state: ListState,
     pub status_message: Option<String>,
     /// When set, we're waiting for the user to confirm killing the session at this index.
@@ -31,16 +44,72 @@ pub struct SessionList {
 
 impl SessionList {
     pub fn new(sessions: Vec<SessionRecord>) -> Self {
+        let display_rows = Self::build_display_rows(&sessions);
         let mut list_state = ListState::default();
-        if !sessions.is_empty() {
-            list_state.select(Some(0));
-        }
+        // Select first selectable row (skip headers)
+        let first_selectable = display_rows
+            .iter()
+            .position(|r| matches!(r, DisplayRow::Session(_)));
+        list_state.select(first_selectable);
         Self {
             sessions,
+            display_rows,
             list_state,
             status_message: None,
             confirm_kill: None,
         }
+    }
+
+    /// Build display rows: group sessions by directory, sorted alphabetically.
+    /// Within each group, sessions appear in their original order (creation time).
+    fn build_display_rows(sessions: &[SessionRecord]) -> Vec<DisplayRow> {
+        if sessions.is_empty() {
+            return vec![];
+        }
+
+        // Group session indices by directory, preserving order within groups.
+        let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for (i, s) in sessions.iter().enumerate() {
+            groups.entry(&s.directory).or_default().push(i);
+        }
+
+        let mut rows = Vec::new();
+        for (dir, indices) in &groups {
+            if !rows.is_empty() {
+                // Blank separator rendered as an empty non-selectable header
+                rows.push(DisplayRow::GroupHeader(String::new()));
+            }
+            rows.push(DisplayRow::GroupHeader(dir.to_string()));
+            for &idx in indices {
+                rows.push(DisplayRow::Session(idx));
+            }
+        }
+        rows
+    }
+
+    fn rebuild_display_rows(&mut self) {
+        self.display_rows = Self::build_display_rows(&self.sessions);
+    }
+
+    /// Map the currently selected display row to a session index, if it's a session row.
+    fn selected_session_index(&self) -> Option<usize> {
+        let row_idx = self.list_state.selected()?;
+        match self.display_rows.get(row_idx) {
+            Some(DisplayRow::Session(session_idx)) => Some(*session_idx),
+            _ => None,
+        }
+    }
+
+    /// Find selectable row indices.
+    fn selectable_indices(&self) -> Vec<usize> {
+        self.display_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match r {
+                DisplayRow::Session(_) => Some(i),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn refresh(&mut self) {
@@ -52,6 +121,7 @@ impl SessionList {
                     .filter(|s| tmux::session_exists(&s.tmux_session_name).unwrap_or(false))
                     .collect();
                 self.sessions = alive;
+                self.rebuild_display_rows();
                 self.clamp_selection();
             }
             Err(e) => {
@@ -76,27 +146,38 @@ impl SessionList {
         }
     }
 
-    /// Select a session by tmux name. Falls back to first item if not found.
+    /// Select a session by tmux name. Falls back to first selectable row if not found.
     pub fn select_by_name(&mut self, name: &str) {
-        let idx = self
+        // Find the session index for this name
+        let session_idx = self
             .sessions
             .iter()
-            .position(|s| s.tmux_session_name == name)
-            .unwrap_or(0);
-        if !self.sessions.is_empty() {
-            self.list_state.select(Some(idx));
-        }
+            .position(|s| s.tmux_session_name == name);
+
+        // Find the display row that maps to that session index
+        let display_idx = session_idx.and_then(|si| {
+            self.display_rows
+                .iter()
+                .position(|r| matches!(r, DisplayRow::Session(idx) if *idx == si))
+        });
+
+        let fallback = self
+            .display_rows
+            .iter()
+            .position(|r| matches!(r, DisplayRow::Session(_)));
+
+        let target = display_idx.or(fallback);
+        self.list_state.select(target);
     }
 
     fn clamp_selection(&mut self) {
-        if self.sessions.is_empty() {
+        let selectable = self.selectable_indices();
+        if selectable.is_empty() {
             self.list_state.select(None);
-        } else if self.list_state.selected().is_none() {
-            self.list_state.select(Some(0));
-        } else if let Some(i) = self.list_state.selected()
-            && i >= self.sessions.len()
+        } else if self.list_state.selected().is_none()
+            || !selectable.contains(&self.list_state.selected().unwrap())
         {
-            self.list_state.select(Some(self.sessions.len() - 1));
+            self.list_state.select(Some(selectable[0]));
         }
     }
 
@@ -137,42 +218,49 @@ impl SessionList {
     }
 
     fn move_up(&mut self) {
-        if self.sessions.is_empty() {
+        let selectable = self.selectable_indices();
+        if selectable.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
+        let current = self.list_state.selected();
+        let next = match current {
             Some(i) => {
-                if i == 0 {
-                    self.sessions.len() - 1
+                // Find current position in selectable list, move to previous (wrapping)
+                let pos = selectable.iter().position(|&s| s == i).unwrap_or(0);
+                if pos == 0 {
+                    *selectable.last().unwrap()
                 } else {
-                    i - 1
+                    selectable[pos - 1]
                 }
             }
-            None => 0,
+            None => selectable[0],
         };
-        self.list_state.select(Some(i));
+        self.list_state.select(Some(next));
     }
 
     fn move_down(&mut self) {
-        if self.sessions.is_empty() {
+        let selectable = self.selectable_indices();
+        if selectable.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
+        let current = self.list_state.selected();
+        let next = match current {
             Some(i) => {
-                if i >= self.sessions.len() - 1 {
-                    0
+                let pos = selectable.iter().position(|&s| s == i).unwrap_or(0);
+                if pos >= selectable.len() - 1 {
+                    selectable[0]
                 } else {
-                    i + 1
+                    selectable[pos + 1]
                 }
             }
-            None => 0,
+            None => selectable[0],
         };
-        self.list_state.select(Some(i));
+        self.list_state.select(Some(next));
     }
 
     fn attach_selected(&self) -> SessionListAction {
-        if let Some(i) = self.list_state.selected() {
-            let session = &self.sessions[i];
+        if let Some(session_idx) = self.selected_session_index() {
+            let session = &self.sessions[session_idx];
             SessionListAction::Attach {
                 session_name: session.tmux_session_name.clone(),
             }
@@ -182,20 +270,20 @@ impl SessionList {
     }
 
     fn request_kill_selected(&mut self) {
-        if let Some(i) = self.list_state.selected() {
-            let name = &self.sessions[i].tmux_session_name;
+        if let Some(session_idx) = self.selected_session_index() {
+            let name = &self.sessions[session_idx].tmux_session_name;
             self.status_message = Some(format!(
                 "Kill '{name}'? Press x/y to confirm, any other key to cancel."
             ));
-            self.confirm_kill = Some(i);
+            self.confirm_kill = Some(session_idx);
         }
     }
 
-    fn kill_session_at(&mut self, idx: usize) {
-        if idx >= self.sessions.len() {
+    fn kill_session_at(&mut self, session_idx: usize) {
+        if session_idx >= self.sessions.len() {
             return;
         }
-        let session = &self.sessions[idx];
+        let session = &self.sessions[session_idx];
         let name = session.tmux_session_name.clone();
         match tmux::kill_session(&name) {
             Ok(()) => {
@@ -264,33 +352,45 @@ impl SessionList {
             frame.render_widget(empty, centered_area);
         } else {
             let items: Vec<ListItem> = self
-                .sessions
+                .display_rows
                 .iter()
-                .map(|s| {
-                    let (icon, icon_color) = if s.claude_session_id.is_none() {
-                        // Plain tmux session
-                        ("🖥️", theme::GRAY_DIM)
-                    } else {
-                        let color = match s.state {
-                            SessionState::Working => theme::ORANGE_BRIGHT,
-                            SessionState::WaitingUser => theme::CYAN,
-                            SessionState::Idle => theme::GRAY_DIM,
+                .map(|row| match row {
+                    DisplayRow::GroupHeader(dir) => {
+                        if dir.is_empty() {
+                            // Blank separator line
+                            ListItem::new(Line::raw(""))
+                        } else {
+                            let line = Line::from(vec![Span::styled(
+                                format!("  {dir}"),
+                                Style::default().fg(theme::GRAY_DIM),
+                            )]);
+                            ListItem::new(line)
+                        }
+                    }
+                    DisplayRow::Session(idx) => {
+                        let s = &self.sessions[*idx];
+                        let (icon, icon_color) = if s.claude_session_id.is_none() {
+                            ("🖥️", theme::GRAY_DIM)
+                        } else {
+                            let color = match s.state {
+                                SessionState::Working => theme::ORANGE_BRIGHT,
+                                SessionState::WaitingUser => theme::CYAN,
+                                SessionState::Idle => theme::GRAY_DIM,
+                            };
+                            (s.state.icon(), color)
                         };
-                        (s.state.icon(), color)
-                    };
-                    let line = Line::from(vec![
-                        Span::styled(icon, Style::default().fg(icon_color)),
-                        Span::raw(" "),
-                        Span::styled(
-                            &s.tmux_session_name,
-                            Style::default()
-                                .fg(theme::SESSION_NAME)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw("  "),
-                        Span::styled(&s.directory, Style::default().fg(theme::GRAY_DIM)),
-                    ]);
-                    ListItem::new(line)
+                        let line = Line::from(vec![
+                            Span::styled(icon, Style::default().fg(icon_color)),
+                            Span::raw(" "),
+                            Span::styled(
+                                &s.tmux_session_name,
+                                Style::default()
+                                    .fg(theme::SESSION_NAME)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ]);
+                        ListItem::new(line)
+                    }
                 })
                 .collect();
 
@@ -347,6 +447,17 @@ mod tests {
         }
     }
 
+    /// Three sessions, each in a different directory.
+    /// BTreeMap ordering: /tmp/one, /tmp/three, /tmp/two
+    /// Display rows:
+    ///   [0] Header "/tmp/one"
+    ///   [1] Session(0) task-one        <- first selectable
+    ///   [2] Separator ""
+    ///   [3] Header "/tmp/three"
+    ///   [4] Session(2) task-three
+    ///   [5] Separator ""
+    ///   [6] Header "/tmp/two"
+    ///   [7] Session(1) task-two        <- last selectable
     fn sample_sessions() -> Vec<SessionRecord> {
         vec![
             SessionRecord {
@@ -376,10 +487,48 @@ mod tests {
         ]
     }
 
+    /// Two sessions share /proj/a, one in /proj/b.
+    /// Display rows:
+    ///   [0] Header "/proj/a"
+    ///   [1] Session(0) alpha           <- first selectable
+    ///   [2] Session(1) beta
+    ///   [3] Separator ""
+    ///   [4] Header "/proj/b"
+    ///   [5] Session(2) gamma           <- last selectable
+    fn sample_grouped_sessions() -> Vec<SessionRecord> {
+        vec![
+            SessionRecord {
+                tmux_session_id: "$1".to_string(),
+                tmux_session_name: "alpha".to_string(),
+                claude_session_id: None,
+                directory: "/proj/a".to_string(),
+                created_at: 1000,
+                state: SessionState::Idle,
+            },
+            SessionRecord {
+                tmux_session_id: "$2".to_string(),
+                tmux_session_name: "beta".to_string(),
+                claude_session_id: None,
+                directory: "/proj/a".to_string(),
+                created_at: 2000,
+                state: SessionState::Working,
+            },
+            SessionRecord {
+                tmux_session_id: "$3".to_string(),
+                tmux_session_name: "gamma".to_string(),
+                claude_session_id: None,
+                directory: "/proj/b".to_string(),
+                created_at: 3000,
+                state: SessionState::Idle,
+            },
+        ]
+    }
+
     #[test]
-    fn test_new_selects_first() {
+    fn test_new_selects_first_session_row() {
         let list = SessionList::new(sample_sessions());
-        assert_eq!(list.list_state.selected(), Some(0));
+        // First selectable is display row 1 (row 0 is a header)
+        assert_eq!(list.list_state.selected(), Some(1));
     }
 
     #[test]
@@ -389,33 +538,61 @@ mod tests {
     }
 
     #[test]
-    fn test_move_down() {
-        let mut list = SessionList::new(sample_sessions());
-        list.handle_key(key(KeyCode::Char('j')));
+    fn test_display_rows_structure() {
+        let list = SessionList::new(sample_grouped_sessions());
+        // Expected: Header, Session, Session, Separator, Header, Session
+        assert_eq!(list.display_rows.len(), 6);
+        assert!(matches!(list.display_rows[0], DisplayRow::GroupHeader(ref d) if d == "/proj/a"));
+        assert!(matches!(list.display_rows[1], DisplayRow::Session(0)));
+        assert!(matches!(list.display_rows[2], DisplayRow::Session(1)));
+        assert!(matches!(list.display_rows[3], DisplayRow::GroupHeader(ref d) if d.is_empty()));
+        assert!(matches!(list.display_rows[4], DisplayRow::GroupHeader(ref d) if d == "/proj/b"));
+        assert!(matches!(list.display_rows[5], DisplayRow::Session(2)));
+    }
+
+    #[test]
+    fn test_move_down_skips_headers() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Starts at row 1 (alpha)
         assert_eq!(list.list_state.selected(), Some(1));
+
+        list.handle_key(key(KeyCode::Char('j')));
+        // Should go to row 2 (beta), not row 3 (separator)
+        assert_eq!(list.list_state.selected(), Some(2));
+
+        list.handle_key(key(KeyCode::Char('j')));
+        // Should skip separator + header, land on row 5 (gamma)
+        assert_eq!(list.list_state.selected(), Some(5));
     }
 
     #[test]
     fn test_move_down_wraps() {
-        let mut list = SessionList::new(sample_sessions());
-        list.list_state.select(Some(2));
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Go to last session (gamma, row 5)
+        list.list_state.select(Some(5));
         list.handle_key(key(KeyCode::Down));
-        assert_eq!(list.list_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn test_move_up() {
-        let mut list = SessionList::new(sample_sessions());
-        list.list_state.select(Some(2));
-        list.handle_key(key(KeyCode::Char('k')));
+        // Should wrap to first selectable (alpha, row 1)
         assert_eq!(list.list_state.selected(), Some(1));
     }
 
     #[test]
-    fn test_move_up_wraps() {
-        let mut list = SessionList::new(sample_sessions());
-        list.handle_key(key(KeyCode::Up));
+    fn test_move_up_skips_headers() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Start at gamma (row 5)
+        list.list_state.select(Some(5));
+
+        list.handle_key(key(KeyCode::Char('k')));
+        // Should skip separator + header, land on beta (row 2)
         assert_eq!(list.list_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn test_move_up_wraps() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // At first selectable (alpha, row 1)
+        list.handle_key(key(KeyCode::Up));
+        // Should wrap to last selectable (gamma, row 5)
+        assert_eq!(list.list_state.selected(), Some(5));
     }
 
     #[test]
@@ -441,26 +618,27 @@ mod tests {
 
     #[test]
     fn test_a_attaches_selected() {
-        let mut list = SessionList::new(sample_sessions());
-        list.handle_key(key(KeyCode::Down)); // select task-two
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Starts at alpha (row 1). Move down to beta (row 2).
+        list.handle_key(key(KeyCode::Down));
         let action = list.handle_key(key(KeyCode::Char('a')));
         assert_eq!(
             action,
             SessionListAction::Attach {
-                session_name: "task-two".to_string()
+                session_name: "beta".to_string()
             }
         );
     }
 
     #[test]
     fn test_enter_attaches_selected() {
-        let mut list = SessionList::new(sample_sessions());
-        list.handle_key(key(KeyCode::Down)); // select task-two
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Down)); // beta
         let action = list.handle_key(key(KeyCode::Enter));
         assert_eq!(
             action,
             SessionListAction::Attach {
-                session_name: "task-two".to_string()
+                session_name: "beta".to_string()
             }
         );
     }
@@ -483,16 +661,18 @@ mod tests {
 
     #[test]
     fn test_select_by_name_finds_session() {
-        let mut list = SessionList::new(sample_sessions());
-        list.select_by_name("task-three");
-        assert_eq!(list.list_state.selected(), Some(2));
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.select_by_name("gamma");
+        // gamma is session index 2, display row 5
+        assert_eq!(list.list_state.selected(), Some(5));
     }
 
     #[test]
     fn test_select_by_name_falls_back_to_first() {
-        let mut list = SessionList::new(sample_sessions());
+        let mut list = SessionList::new(sample_grouped_sessions());
         list.select_by_name("nonexistent");
-        assert_eq!(list.list_state.selected(), Some(0));
+        // Falls back to first selectable (row 1)
+        assert_eq!(list.list_state.selected(), Some(1));
     }
 
     #[test]
@@ -500,12 +680,14 @@ mod tests {
         let mut list = SessionList::new(sample_sessions());
         list.list_state.select(None);
         list.clamp_selection();
-        assert_eq!(list.list_state.selected(), Some(0));
+        // First selectable row
+        assert_eq!(list.list_state.selected(), Some(1));
     }
 
     #[test]
     fn test_x_sets_confirm_kill() {
-        let mut list = SessionList::new(sample_sessions());
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Selected is alpha (session index 0)
         let action = list.handle_key(key(KeyCode::Char('x')));
         assert_eq!(action, SessionListAction::None);
         assert_eq!(list.confirm_kill, Some(0));
@@ -556,5 +738,49 @@ mod tests {
         list.handle_key(key(KeyCode::Char('j'))); // navigation key cancels
         assert_eq!(list.confirm_kill, None);
         assert_eq!(list.status_message.as_ref().unwrap(), "Kill cancelled.");
+    }
+
+    #[test]
+    fn test_single_group_no_separator() {
+        // All sessions in same directory — no separator rows
+        let sessions = vec![
+            SessionRecord {
+                tmux_session_id: "$1".to_string(),
+                tmux_session_name: "a".to_string(),
+                claude_session_id: None,
+                directory: "/same".to_string(),
+                created_at: 1000,
+                state: SessionState::Idle,
+            },
+            SessionRecord {
+                tmux_session_id: "$2".to_string(),
+                tmux_session_name: "b".to_string(),
+                claude_session_id: None,
+                directory: "/same".to_string(),
+                created_at: 2000,
+                state: SessionState::Idle,
+            },
+        ];
+        let list = SessionList::new(sessions);
+        // Header + 2 sessions, no separators
+        assert_eq!(list.display_rows.len(), 3);
+        assert!(matches!(list.display_rows[0], DisplayRow::GroupHeader(ref d) if d == "/same"));
+        assert!(matches!(list.display_rows[1], DisplayRow::Session(0)));
+        assert!(matches!(list.display_rows[2], DisplayRow::Session(1)));
+    }
+
+    #[test]
+    fn test_attach_correct_session_across_groups() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Navigate to gamma (last session, row 5)
+        list.handle_key(key(KeyCode::Down)); // beta (row 2)
+        list.handle_key(key(KeyCode::Down)); // gamma (row 5)
+        let action = list.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            action,
+            SessionListAction::Attach {
+                session_name: "gamma".to_string()
+            }
+        );
     }
 }
