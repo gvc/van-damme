@@ -88,7 +88,7 @@ pub fn create_session(
 
     let window_name = window_name_from_command(claude_command);
 
-    // Create detached session with claude window, starting in the project directory
+    // Create detached session with an idle shell — pane survives if claude exits
     let output = Command::new("tmux")
         .args([
             "new-session",
@@ -99,13 +99,23 @@ pub fn create_session(
             window_name,
             "-c",
             &abs_dir,
-            &claude_cmd,
         ])
         .stdin(std::process::Stdio::null())
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(eyre!("Failed to create tmux session '{name}': {stderr}"));
+    }
+
+    // Send the claude command to the pane so it starts in the shell context.
+    // The pane stays alive after claude exits (shell remains).
+    let target = format!("{name}:{window_name}");
+    let send_output = Command::new("tmux")
+        .args(["send-keys", "-t", &target, &claude_cmd, "Enter"])
+        .output()?;
+    if !send_output.status.success() {
+        let stderr = String::from_utf8_lossy(&send_output.stderr);
+        return Err(eyre!("Failed to send claude command to pane '{target}': {stderr}"));
     }
 
     // Capture session ID

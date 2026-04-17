@@ -285,17 +285,12 @@ impl SessionList {
         }
         let session = &self.sessions[session_idx];
         let name = session.tmux_session_name.clone();
-        match tmux::kill_session(&name) {
-            Ok(()) => {
-                self.status_message = Some(format!("Killed session: {name}"));
-                // Remove from our DB too
-                let _ = crate::session::remove_session(&name);
-                self.refresh();
-            }
-            Err(e) => {
-                self.status_message = Some(format!("Failed to kill '{name}': {e}"));
-            }
-        }
+        // Kill tmux session if it exists; ignore errors (session may already be gone)
+        let _ = tmux::kill_session(&name);
+        // Always remove from DB regardless of tmux result
+        let _ = crate::session::remove_session(&name);
+        self.status_message = Some(format!("Deleted session: {name}"));
+        self.refresh();
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
