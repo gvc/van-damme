@@ -374,14 +374,24 @@ impl SessionList {
                             };
                             (s.state.icon(), color)
                         };
+                        let command_tag = format!("[{}]", s.claude_command);
+                        // All icons display as 2 terminal columns; "▸ " highlight prefix is 2.
+                        let content_used = 2 + 1 + s.tmux_session_name.len() + command_tag.len();
+                        let list_width = chunks[0].width as usize;
+                        let padding = list_width.saturating_sub(2 + content_used);
                         let line = Line::from(vec![
                             Span::styled(icon, Style::default().fg(icon_color)),
                             Span::raw(" "),
                             Span::styled(
-                                &s.tmux_session_name,
+                                s.tmux_session_name.clone(),
                                 Style::default()
                                     .fg(theme::SESSION_NAME)
                                     .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::raw(" ".repeat(padding)),
+                            Span::styled(
+                                command_tag,
+                                Style::default().fg(theme::GRAY_DIM),
                             ),
                         ]);
                         ListItem::new(line)
