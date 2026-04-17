@@ -86,6 +86,8 @@ pub fn create_session(
         "{claude_parts} || {{ echo ''; echo '[van-damme] claude exited with code '$?; read; }}"
     );
 
+    let window_name = window_name_from_command(claude_command);
+
     // Create detached session with claude window, starting in the project directory
     let output = Command::new("tmux")
         .args([
@@ -94,7 +96,7 @@ pub fn create_session(
             "-s",
             name,
             "-n",
-            "claude",
+            window_name,
             "-c",
             &abs_dir,
             &claude_cmd,
@@ -121,7 +123,9 @@ pub fn create_session(
 
 /// Add a terminal split pane to the right of Claude in an existing tmux session.
 /// Called when Claude's SessionStart hook fires, so the worktree is guaranteed to exist.
-pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
+/// `window_name` is the tmux window name (e.g. "claude", "cc") — must match what was
+/// used when creating the session.
+pub fn setup_editor_window(session_name: &str, directory: &str, window_name: &str) -> Result<()> {
     let abs_dir = std::path::Path::new(directory)
         .canonicalize()
         .map_err(|e| eyre!("Cannot resolve directory '{directory}': {e}"))?
@@ -138,28 +142,16 @@ pub fn setup_editor_window(session_name: &str, directory: &str) -> Result<()> {
         &abs_dir
     };
 
+    let target = format!("{session_name}:{window_name}");
+
     // Split claude window horizontally to add a terminal pane on the right
-    run_tmux(&[
-        "split-window",
-        "-h",
-        "-t",
-        &format!("{session_name}:claude"),
-        "-c",
-        pane_dir,
-    ])?;
+    run_tmux(&["split-window", "-h", "-t", &target, "-c", pane_dir])?;
 
     // Split the right pane vertically to get two stacked panes on the right
-    run_tmux(&[
-        "split-window",
-        "-v",
-        "-t",
-        &format!("{session_name}:claude"),
-        "-c",
-        pane_dir,
-    ])?;
+    run_tmux(&["split-window", "-v", "-t", &target, "-c", pane_dir])?;
 
     // Focus back on the claude pane (left)
-    run_tmux(&["select-pane", "-L", "-t", &format!("{session_name}:claude")])?;
+    run_tmux(&["select-pane", "-L", "-t", &target])?;
 
     Ok(())
 }
@@ -211,6 +203,15 @@ pub fn switch_to_session(name: &str) -> Result<()> {
 /// Kill a tmux session by name.
 pub fn kill_session(name: &str) -> Result<()> {
     run_tmux(&["kill-session", "-t", name])
+}
+
+/// Extract the base command name from a claude_command string to use as a tmux window name.
+/// e.g. "/usr/bin/claude" -> "claude", "cc" -> "cc", "claude" -> "claude"
+pub fn window_name_from_command(claude_command: &str) -> &str {
+    std::path::Path::new(claude_command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(claude_command)
 }
 
 /// Escape a string for safe use as a single shell argument.
@@ -298,6 +299,26 @@ mod tests {
     #[test]
     fn test_shell_escape_empty() {
         assert_eq!(shell_escape(""), "''");
+    }
+
+    #[test]
+    fn test_window_name_from_command_simple() {
+        assert_eq!(window_name_from_command("claude"), "claude");
+    }
+
+    #[test]
+    fn test_window_name_from_command_path() {
+        assert_eq!(window_name_from_command("/usr/bin/claude"), "claude");
+    }
+
+    #[test]
+    fn test_window_name_from_command_short() {
+        assert_eq!(window_name_from_command("cc"), "cc");
+    }
+
+    #[test]
+    fn test_window_name_from_command_relative_path() {
+        assert_eq!(window_name_from_command("./bin/my-claude"), "my-claude");
     }
 
     #[test]

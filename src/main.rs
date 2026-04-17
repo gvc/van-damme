@@ -300,6 +300,7 @@ fn draw_launching(frame: &mut ratatui::Frame, state: &LaunchState) {
     frame.render_widget(paragraph, centered);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_launch(
     session_name: String,
     title: String,
@@ -336,6 +337,7 @@ fn spawn_launch(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn launch_session(
     title: &str,
     directory: &str,
@@ -401,6 +403,7 @@ fn launch_session(
         session_name.clone(),
         claude_session_id.clone(),
         directory.to_string(),
+        claude_command.to_string(),
     )?;
 
     let tmux_session = match tmux::create_session(

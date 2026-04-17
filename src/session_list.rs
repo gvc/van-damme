@@ -467,6 +467,7 @@ mod tests {
                 directory: "/tmp/one".to_string(),
                 created_at: 1000,
                 state: SessionState::Idle,
+                claude_command: "claude".to_string(),
             },
             SessionRecord {
                 tmux_session_id: "$2".to_string(),
@@ -475,6 +476,7 @@ mod tests {
                 directory: "/tmp/two".to_string(),
                 created_at: 2000,
                 state: SessionState::Idle,
+                claude_command: "claude".to_string(),
             },
             SessionRecord {
                 tmux_session_id: "$3".to_string(),
@@ -483,6 +485,7 @@ mod tests {
                 directory: "/tmp/three".to_string(),
                 created_at: 3000,
                 state: SessionState::Idle,
+                claude_command: "claude".to_string(),
             },
         ]
     }
@@ -504,6 +507,7 @@ mod tests {
                 directory: "/proj/a".to_string(),
                 created_at: 1000,
                 state: SessionState::Idle,
+                claude_command: "claude".to_string(),
             },
             SessionRecord {
                 tmux_session_id: "$2".to_string(),
@@ -512,6 +516,7 @@ mod tests {
                 directory: "/proj/a".to_string(),
                 created_at: 2000,
                 state: SessionState::Working,
+                claude_command: "claude".to_string(),
             },
             SessionRecord {
                 tmux_session_id: "$3".to_string(),
@@ -520,6 +525,7 @@ mod tests {
                 directory: "/proj/b".to_string(),
                 created_at: 3000,
                 state: SessionState::Idle,
+                claude_command: "claude".to_string(),
             },
         ]
     }
@@ -751,6 +757,7 @@ mod tests {
                 directory: "/same".to_string(),
                 created_at: 1000,
                 state: SessionState::Idle,
+                claude_command: "claude".to_string(),
             },
             SessionRecord {
                 tmux_session_id: "$2".to_string(),
@@ -759,6 +766,7 @@ mod tests {
                 directory: "/same".to_string(),
                 created_at: 2000,
                 state: SessionState::Idle,
+                claude_command: "claude".to_string(),
             },
         ];
         let list = SessionList::new(sessions);

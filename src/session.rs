@@ -40,10 +40,16 @@ pub struct SessionRecord {
     pub created_at: u64,
     #[serde(default = "default_state")]
     pub state: SessionState,
+    #[serde(default = "default_claude_command")]
+    pub claude_command: String,
 }
 
 fn default_state() -> SessionState {
     SessionState::Idle
+}
+
+fn default_claude_command() -> String {
+    "claude".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -162,6 +168,7 @@ pub fn add_session(
     tmux_session_name: String,
     claude_session_id: String,
     directory: String,
+    claude_command: String,
 ) -> Result<SessionRecord> {
     let path = default_db_path()?;
     add_session_to(
@@ -170,6 +177,7 @@ pub fn add_session(
         tmux_session_name,
         Some(claude_session_id),
         directory,
+        claude_command,
     )
 }
 
@@ -180,7 +188,14 @@ pub fn add_plain_session(
     directory: String,
 ) -> Result<SessionRecord> {
     let path = default_db_path()?;
-    add_session_to(&path, tmux_session_id, tmux_session_name, None, directory)
+    add_session_to(
+        &path,
+        tmux_session_id,
+        tmux_session_name,
+        None,
+        directory,
+        "claude".to_string(),
+    )
 }
 
 fn add_session_to(
@@ -189,6 +204,7 @@ fn add_session_to(
     tmux_session_name: String,
     claude_session_id: Option<String>,
     directory: String,
+    claude_command: String,
 ) -> Result<SessionRecord> {
     let mut db = load_db_from(path)?;
     let created_at = SystemTime::now()
@@ -203,6 +219,7 @@ fn add_session_to(
         directory,
         created_at,
         state: SessionState::Idle,
+        claude_command,
     };
 
     db.sessions.push(record.clone());
@@ -229,6 +246,7 @@ mod tests {
             directory: "/tmp".to_string(),
             created_at: 1700000000,
             state: SessionState::Idle,
+            claude_command: "claude".to_string(),
         };
         let json = serde_json::to_string(&record).unwrap();
         let deserialized: SessionRecord = serde_json::from_str(&json).unwrap();
@@ -245,6 +263,7 @@ mod tests {
                 directory: "/home/user".to_string(),
                 created_at: 1700000000,
                 state: SessionState::Idle,
+                claude_command: "claude".to_string(),
             }],
         };
         let json = serde_json::to_string_pretty(&db).unwrap();
@@ -269,6 +288,7 @@ mod tests {
             "test-session".to_string(),
             Some("test-uuid-123".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
 
@@ -291,6 +311,7 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
         add_session_to(
@@ -299,6 +320,7 @@ mod tests {
             "second".to_string(),
             Some("uuid-second".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
 
@@ -315,6 +337,7 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
         add_session_to(
@@ -323,6 +346,7 @@ mod tests {
             "second".to_string(),
             Some("uuid-second".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
 
@@ -348,6 +372,7 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
         add_session_to(
@@ -356,6 +381,7 @@ mod tests {
             "second".to_string(),
             Some("uuid-second".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
 
@@ -375,6 +401,7 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
 
@@ -395,6 +422,7 @@ mod tests {
                 directory: "/home".to_string(),
                 created_at: 999,
                 state: SessionState::Working,
+                claude_command: "claude".to_string(),
             }],
         };
         save_db_to(&path, &db).unwrap();
@@ -412,6 +440,7 @@ mod tests {
             "my-session".to_string(),
             Some("uuid-1".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
 
@@ -453,6 +482,7 @@ mod tests {
             "my-session".to_string(),
             Some("uuid-1".to_string()),
             "/tmp".to_string(),
+            "claude".to_string(),
         )
         .unwrap();
 
@@ -485,5 +515,19 @@ mod tests {
         }"#;
         let record: SessionRecord = serde_json::from_str(json).unwrap();
         assert_eq!(record.state, SessionState::Idle);
+    }
+
+    #[test]
+    fn test_claude_command_defaults_on_deserialize() {
+        // Simulate a legacy record without claude_command field
+        let json = r#"{
+            "tmux_session_id": "$1",
+            "tmux_session_name": "legacy",
+            "claude_session_id": null,
+            "directory": "/tmp",
+            "created_at": 100
+        }"#;
+        let record: SessionRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.claude_command, "claude");
     }
 }

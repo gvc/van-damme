@@ -37,7 +37,8 @@ pub fn run() -> Result<()> {
     if event.hook_event_name == "SessionStart"
         && let Ok(Some(record)) = session::find_by_claude_session(&event.session_id)
     {
-        let _ = tmux::setup_editor_window(&record.tmux_session_name, &record.directory);
+        let window_name = tmux::window_name_from_command(&record.claude_command);
+        let _ = tmux::setup_editor_window(&record.tmux_session_name, &record.directory, window_name);
     }
 
     Ok(())
