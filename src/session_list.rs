@@ -346,10 +346,12 @@ impl SessionList {
                 .alignment(Alignment::Center);
             frame.render_widget(empty, centered_area);
         } else {
+            let selected_row = self.list_state.selected();
             let items: Vec<ListItem> = self
                 .display_rows
                 .iter()
-                .map(|row| match row {
+                .enumerate()
+                .map(|(row_idx, row)| match row {
                     DisplayRow::GroupHeader(dir) => {
                         if dir.is_empty() {
                             // Blank separator line
@@ -363,6 +365,7 @@ impl SessionList {
                         }
                     }
                     DisplayRow::Session(idx) => {
+                        let is_selected = selected_row == Some(row_idx);
                         let s = &self.sessions[*idx];
                         let (icon, icon_color) = if s.claude_session_id.is_none() {
                             ("🖥️", theme::GRAY_DIM)
@@ -391,7 +394,11 @@ impl SessionList {
                             Span::raw(" ".repeat(padding)),
                             Span::styled(
                                 command_tag,
-                                Style::default().fg(theme::GRAY_DIM),
+                                Style::default().fg(if is_selected {
+                                    theme::CYAN_VIVID
+                                } else {
+                                    theme::GRAY_DIM
+                                }),
                             ),
                         ]);
                         ListItem::new(line)
