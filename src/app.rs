@@ -144,6 +144,7 @@ pub enum InputField {
     BranchName,
     Prompt,
     ClaudeArgs,
+    ClaudeCommand,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +158,7 @@ pub enum Action {
         branch_name: Option<String>,
         prompt: Option<String>,
         claude_args: Option<String>,
+        claude_command: String,
     },
     SubmitTmuxSession {
         title: String,
@@ -175,6 +177,7 @@ pub struct App {
     pub branch_name_input: Input,
     pub prompt_input: Input,
     pub claude_args_input: Input,
+    pub claude_command_input: Input,
     pub dir_suggestion: Option<String>,
     pub error_message: Option<String>,
     pub recent_dirs: Vec<String>,
@@ -212,6 +215,7 @@ impl App {
             branch_name_input: Input::default(),
             prompt_input: Input::default(),
             claude_args_input: Input::default(),
+            claude_command_input: Input::new("claude".to_string()),
             dir_suggestion: None,
             error_message: None,
             recent_dirs,
@@ -245,7 +249,10 @@ impl App {
             if !self.show_advanced
                 && matches!(
                     self.focused_field,
-                    InputField::GitMode | InputField::BranchName | InputField::ClaudeArgs
+                    InputField::GitMode
+                        | InputField::BranchName
+                        | InputField::ClaudeArgs
+                        | InputField::ClaudeCommand
                 )
             {
                 self.focused_field = InputField::Prompt;
@@ -333,6 +340,10 @@ impl App {
                     }
                     InputField::ClaudeArgs => {
                         self.claude_args_input
+                            .handle_event(&crossterm::event::Event::Key(key));
+                    }
+                    InputField::ClaudeCommand => {
+                        self.claude_command_input
                             .handle_event(&crossterm::event::Event::Key(key));
                     }
                 }
@@ -514,7 +525,14 @@ impl App {
                     InputField::Title
                 }
             }
-            InputField::ClaudeArgs => InputField::Title,
+            InputField::ClaudeArgs => {
+                if self.show_advanced {
+                    InputField::ClaudeCommand
+                } else {
+                    InputField::Title
+                }
+            }
+            InputField::ClaudeCommand => InputField::Title,
         };
     }
 
@@ -529,7 +547,7 @@ impl App {
         self.focused_field = match self.focused_field {
             InputField::Title => {
                 if self.show_advanced {
-                    InputField::ClaudeArgs
+                    InputField::ClaudeCommand
                 } else {
                     InputField::Prompt
                 }
@@ -549,6 +567,7 @@ impl App {
                 }
             }
             InputField::ClaudeArgs => InputField::Prompt,
+            InputField::ClaudeCommand => InputField::ClaudeArgs,
         };
     }
 
@@ -602,6 +621,15 @@ impl App {
             Some(args_raw)
         };
 
+        let claude_command = {
+            let cmd = self.claude_command_input.value().trim().to_string();
+            if cmd.is_empty() {
+                "claude".to_string()
+            } else {
+                cmd
+            }
+        };
+
         Action::Submit {
             title,
             directory,
@@ -609,6 +637,7 @@ impl App {
             branch_name,
             prompt,
             claude_args,
+            claude_command,
         }
     }
 
@@ -643,7 +672,7 @@ impl App {
             } else {
                 0
             };
-            2 + branch_extra + 4 // git mode (label + selector) + branch (conditional) + args (label + input)
+            2 + branch_extra + 4 + 4 // git mode (label + selector) + branch (conditional) + args (label + input) + command (label + input)
         } else {
             0
         };
@@ -709,6 +738,8 @@ impl App {
         if self.show_advanced {
             constraints.push(Constraint::Length(1)); // Claude args label
             constraints.push(Constraint::Length(3)); // Claude args input
+            constraints.push(Constraint::Length(1)); // Claude command label
+            constraints.push(Constraint::Length(3)); // Claude command input
         }
         constraints.push(Constraint::Min(1)); // Hints
         let chunks = Layout::vertical(constraints).split(inner);
@@ -753,14 +784,22 @@ impl App {
 
         let args_label_idx;
         let args_input_idx;
+        let cmd_label_idx;
+        let cmd_input_idx;
         if self.show_advanced {
             args_label_idx = Some(next_idx);
             next_idx += 1;
             args_input_idx = Some(next_idx);
             next_idx += 1;
+            cmd_label_idx = Some(next_idx);
+            next_idx += 1;
+            cmd_input_idx = Some(next_idx);
+            next_idx += 1;
         } else {
             args_label_idx = None;
             args_input_idx = None;
+            cmd_label_idx = None;
+            cmd_input_idx = None;
         }
         let hints_idx = next_idx;
 
@@ -953,6 +992,31 @@ impl App {
             frame.render_widget(args_para, chunks[ai_idx]);
         }
 
+        // Claude command (only when advanced is shown)
+        let mut cmd_inner = None;
+        if self.show_advanced
+            && let (Some(cl_idx), Some(ci_idx)) = (cmd_label_idx, cmd_input_idx)
+        {
+            let cmd_label = Paragraph::new("Claude command (default: claude):")
+                .style(Style::default().fg(theme::TEXT).bg(theme::BG));
+            frame.render_widget(cmd_label, chunks[cl_idx]);
+
+            let cmd_border_color = if self.focused_field == InputField::ClaudeCommand {
+                theme::ORANGE_BRIGHT
+            } else {
+                theme::GRAY
+            };
+            let cmd_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(cmd_border_color))
+                .style(Style::default().bg(theme::BG));
+            cmd_inner = Some(cmd_block.inner(chunks[ci_idx]));
+            let cmd_para = Paragraph::new(self.claude_command_input.value())
+                .style(Style::default().fg(theme::TEXT))
+                .block(cmd_block);
+            frame.render_widget(cmd_para, chunks[ci_idx]);
+        }
+
         // Hints + error
         let hint_text = if self.show_recent_dirs {
             "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
@@ -1053,6 +1117,9 @@ impl App {
                     InputField::Prompt => (&self.prompt_input, prompt_inner),
                     InputField::ClaudeArgs => {
                         (&self.claude_args_input, args_inner.unwrap_or(title_inner))
+                    }
+                    InputField::ClaudeCommand => {
+                        (&self.claude_command_input, cmd_inner.unwrap_or(title_inner))
                     }
                     InputField::GitMode => unreachable!(),
                 };
@@ -1325,6 +1392,9 @@ mod tests {
         assert_eq!(app.focused_field, InputField::ClaudeArgs);
 
         app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::ClaudeCommand);
+
+        app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::Title);
     }
 
@@ -1372,6 +1442,7 @@ mod tests {
                 branch_name: None,
                 prompt: None,
                 claude_args: None,
+                claude_command: "claude".to_string(),
             }
         );
     }
@@ -1432,6 +1503,10 @@ mod tests {
         assert_eq!(app.focused_field, InputField::Prompt);
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.focused_field, InputField::ClaudeArgs);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.focused_field, InputField::ClaudeCommand);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.focused_field, InputField::ClaudeArgs);
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.focused_field, InputField::Prompt);
         app.handle_key(key(KeyCode::Up));
@@ -1467,6 +1542,7 @@ mod tests {
                 branch_name: None,
                 prompt: Some("fix the bug".to_string()),
                 claude_args: None,
+                claude_command: "claude".to_string(),
             }
         );
     }
@@ -1499,6 +1575,7 @@ mod tests {
                 branch_name: None,
                 prompt: None,
                 claude_args: Some("--model sonnet".to_string()),
+                claude_command: "claude".to_string(),
             }
         );
     }

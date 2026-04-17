@@ -146,6 +146,7 @@ fn main() -> Result<()> {
                                     branch_name,
                                     prompt,
                                     claude_args,
+                                    claude_command,
                                 } => {
                                     let session_name = tmux::sanitize_session_name(&title);
                                     let state = spawn_launch(
@@ -156,6 +157,7 @@ fn main() -> Result<()> {
                                         branch_name,
                                         prompt,
                                         claude_args,
+                                        claude_command,
                                     );
                                     launch_state = Some(state);
                                     screen = Screen::Launching;
@@ -306,6 +308,7 @@ fn spawn_launch(
     branch_name: Option<String>,
     prompt: Option<String>,
     claude_args: Option<String>,
+    claude_command: String,
 ) -> LaunchState {
     let (progress_tx, progress_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
@@ -317,6 +320,7 @@ fn spawn_launch(
             branch_name.as_deref(),
             prompt.as_deref(),
             claude_args.as_deref(),
+            &claude_command,
             &progress_tx,
         );
         let _ = result_tx.send(result.map_err(|e| format!("{e}")));
@@ -339,6 +343,7 @@ fn launch_session(
     branch_name: Option<&str>,
     prompt: Option<&str>,
     claude_args: Option<&str>,
+    claude_command: &str,
     progress: &mpsc::Sender<String>,
 ) -> Result<()> {
     let session_name = tmux::sanitize_session_name(title);
@@ -405,6 +410,7 @@ fn launch_session(
         claude_args,
         &claude_session_id,
         use_worktree,
+        claude_command,
     ) {
         Ok(s) => s,
         Err(e) => {
