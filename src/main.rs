@@ -156,7 +156,6 @@ fn main() -> Result<()> {
                                     git_mode,
                                     branch_name,
                                     prompt,
-                                    claude_args,
                                     claude_command,
                                     model_selection,
                                 } => {
@@ -171,7 +170,6 @@ fn main() -> Result<()> {
                                         git_mode,
                                         branch_name,
                                         prompt,
-                                        claude_args,
                                         claude_command,
                                         model_selection,
                                     );
@@ -324,7 +322,6 @@ fn spawn_launch(
     git_mode: app::GitMode,
     branch_name: Option<String>,
     prompt: Option<String>,
-    claude_args: Option<String>,
     claude_command: String,
     model_selection: app::ModelSelection,
 ) -> LaunchState {
@@ -337,7 +334,6 @@ fn spawn_launch(
             git_mode,
             branch_name.as_deref(),
             prompt.as_deref(),
-            claude_args.as_deref(),
             &claude_command,
             model_selection,
             &progress_tx,
@@ -362,7 +358,6 @@ fn launch_session(
     git_mode: app::GitMode,
     branch_name: Option<&str>,
     prompt: Option<&str>,
-    claude_args: Option<&str>,
     claude_command: &str,
     model_selection: app::ModelSelection,
     progress: &mpsc::Sender<String>,
@@ -430,7 +425,7 @@ fn launch_session(
         &session_name,
         directory,
         prompt,
-        claude_args,
+        None,
         &claude_session_id,
         use_worktree,
         claude_command,
