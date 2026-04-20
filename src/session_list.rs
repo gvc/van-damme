@@ -377,7 +377,10 @@ impl SessionList {
                             };
                             (s.state.icon(), color)
                         };
-                        let command_tag = format!("[{}]", s.claude_command);
+                        let command_tag = match &s.model_id {
+                            Some(m) => format!("[{} | {}]", s.claude_command, m),
+                            None => format!("[{}]", s.claude_command),
+                        };
                         // All icons display as 2 terminal columns; "▸ " highlight prefix is 2.
                         let content_used = 2 + 1 + s.tmux_session_name.len() + command_tag.len();
                         let list_width = chunks[0].width as usize;
@@ -479,7 +482,7 @@ mod tests {
                 directory: "/tmp/one".to_string(),
                 created_at: 1000,
                 state: SessionState::Idle,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             },
             SessionRecord {
                 tmux_session_id: "$2".to_string(),
@@ -488,7 +491,7 @@ mod tests {
                 directory: "/tmp/two".to_string(),
                 created_at: 2000,
                 state: SessionState::Idle,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             },
             SessionRecord {
                 tmux_session_id: "$3".to_string(),
@@ -497,7 +500,7 @@ mod tests {
                 directory: "/tmp/three".to_string(),
                 created_at: 3000,
                 state: SessionState::Idle,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             },
         ]
     }
@@ -519,7 +522,7 @@ mod tests {
                 directory: "/proj/a".to_string(),
                 created_at: 1000,
                 state: SessionState::Idle,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             },
             SessionRecord {
                 tmux_session_id: "$2".to_string(),
@@ -528,7 +531,7 @@ mod tests {
                 directory: "/proj/a".to_string(),
                 created_at: 2000,
                 state: SessionState::Working,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             },
             SessionRecord {
                 tmux_session_id: "$3".to_string(),
@@ -537,7 +540,7 @@ mod tests {
                 directory: "/proj/b".to_string(),
                 created_at: 3000,
                 state: SessionState::Idle,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             },
         ]
     }
@@ -769,7 +772,7 @@ mod tests {
                 directory: "/same".to_string(),
                 created_at: 1000,
                 state: SessionState::Idle,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             },
             SessionRecord {
                 tmux_session_id: "$2".to_string(),
@@ -778,7 +781,7 @@ mod tests {
                 directory: "/same".to_string(),
                 created_at: 2000,
                 state: SessionState::Idle,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             },
         ];
         let list = SessionList::new(sessions);
@@ -802,5 +805,43 @@ mod tests {
                 session_name: "gamma".to_string()
             }
         );
+    }
+
+    #[test]
+    fn test_command_tag_without_model() {
+        let session = SessionRecord {
+            tmux_session_id: "$1".to_string(),
+            tmux_session_name: "test".to_string(),
+            claude_session_id: None,
+            directory: "/tmp".to_string(),
+            created_at: 1000,
+            state: SessionState::Idle,
+            claude_command: "claude".to_string(),
+            model_id: None,
+        };
+        let tag = match &session.model_id {
+            Some(m) => format!("[{} | {}]", session.claude_command, m),
+            None => format!("[{}]", session.claude_command),
+        };
+        assert_eq!(tag, "[claude]");
+    }
+
+    #[test]
+    fn test_command_tag_with_model() {
+        let session = SessionRecord {
+            tmux_session_id: "$1".to_string(),
+            tmux_session_name: "test".to_string(),
+            claude_session_id: None,
+            directory: "/tmp".to_string(),
+            created_at: 1000,
+            state: SessionState::Idle,
+            claude_command: "claude".to_string(),
+            model_id: Some("claude-sonnet-4-6".to_string()),
+        };
+        let tag = match &session.model_id {
+            Some(m) => format!("[{} | {}]", session.claude_command, m),
+            None => format!("[{}]", session.claude_command),
+        };
+        assert_eq!(tag, "[claude | claude-sonnet-4-6]");
     }
 }

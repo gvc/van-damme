@@ -51,6 +51,7 @@ pub fn session_exists(name: &str) -> Result<bool> {
 /// The `claude_session_id` is the pre-generated UUID used for `--session-id`.
 /// If `use_worktree` is true, Claude is launched with `--worktree <name>`.
 /// `claude_command` is the executable name/path to invoke (default: "claude").
+#[allow(clippy::too_many_arguments)]
 pub fn create_session(
     name: &str,
     dir: &str,
@@ -59,6 +60,7 @@ pub fn create_session(
     claude_session_id: &str,
     use_worktree: bool,
     claude_command: &str,
+    model_id: Option<&str>,
 ) -> Result<TmuxSession> {
     // Canonicalize the base directory so tmux gets an absolute, resolved path
     let abs_dir = std::path::Path::new(dir)
@@ -68,22 +70,14 @@ pub fn create_session(
         .to_string();
 
     // Build the claude command with optional extra args and prompt
-    let mut claude_parts = if use_worktree {
-        format!("{claude_command} --worktree {name} --session-id {claude_session_id}")
-    } else {
-        format!("{claude_command} --session-id {claude_session_id}")
-    };
-    if let Some(args) = claude_args {
-        claude_parts.push(' ');
-        claude_parts.push_str(args);
-    }
-    if let Some(p) = prompt {
-        claude_parts.push(' ');
-        claude_parts.push_str(&shell_escape(p));
-    }
-    // Wrap so that if claude exits with an error, the pane stays open showing it
-    let claude_cmd = format!(
-        "{claude_parts} || {{ echo ''; echo '[van-damme] claude exited with code '$?; read; }}"
+    let claude_cmd = build_claude_cmd(
+        name,
+        claude_session_id,
+        use_worktree,
+        claude_command,
+        model_id,
+        claude_args,
+        prompt,
     );
 
     let window_name = window_name_from_command(claude_command);
@@ -224,6 +218,37 @@ pub fn window_name_from_command(claude_command: &str) -> &str {
         .unwrap_or(claude_command)
 }
 
+/// Build the full claude command string sent to the tmux pane.
+fn build_claude_cmd(
+    name: &str,
+    claude_session_id: &str,
+    use_worktree: bool,
+    claude_command: &str,
+    model_id: Option<&str>,
+    claude_args: Option<&str>,
+    prompt: Option<&str>,
+) -> String {
+    let mut parts = if use_worktree {
+        format!("{claude_command} --worktree {name} --session-id {claude_session_id}")
+    } else {
+        format!("{claude_command} --session-id {claude_session_id}")
+    };
+    if let Some(model) = model_id {
+        parts.push_str(&format!(" --model {model}"));
+    }
+    if let Some(args) = claude_args {
+        parts.push(' ');
+        parts.push_str(args);
+    }
+    if let Some(p) = prompt {
+        parts.push(' ');
+        parts.push_str(&shell_escape(p));
+    }
+    format!(
+        "{parts} || {{ echo ''; echo '[van-damme] claude exited with code '$?; read; }}"
+    )
+}
+
 /// Escape a string for safe use as a single shell argument.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -332,6 +357,60 @@ mod tests {
     }
 
     #[test]
+    fn test_build_claude_cmd_includes_model_flag() {
+        let cmd = build_claude_cmd(
+            "my-session",
+            "uuid-123",
+            false,
+            "claude",
+            Some("claude-sonnet-4-6"),
+            None,
+            None,
+        );
+        assert!(cmd.contains("--model claude-sonnet-4-6"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn test_build_claude_cmd_no_model_flag_when_none() {
+        let cmd = build_claude_cmd("my-session", "uuid-123", false, "claude", None, None, None);
+        assert!(!cmd.contains("--model"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn test_build_claude_cmd_model_before_claude_args() {
+        let cmd = build_claude_cmd(
+            "my-session",
+            "uuid-123",
+            false,
+            "claude",
+            Some("claude-opus-4-6"),
+            Some("--extra-arg"),
+            None,
+        );
+        let model_pos = cmd.find("--model").unwrap();
+        let args_pos = cmd.find("--extra-arg").unwrap();
+        assert!(
+            model_pos < args_pos,
+            "--model should appear before --extra-arg"
+        );
+    }
+
+    #[test]
+    fn test_build_claude_cmd_worktree_includes_model() {
+        let cmd = build_claude_cmd(
+            "my-session",
+            "uuid-123",
+            true,
+            "claude",
+            Some("claude-haiku-4-5-20251001"),
+            None,
+            None,
+        );
+        assert!(cmd.contains("--worktree my-session"), "cmd: {cmd}");
+        assert!(cmd.contains("--model claude-haiku-4-5-20251001"), "cmd: {cmd}");
+    }
+
+    #[test]
     #[ignore] // Requires tmux to be running
     fn test_session_exists_nonexistent() {
         let result = session_exists("nonexistent-session-12345");
@@ -350,7 +429,7 @@ mod tests {
             .args(["kill-session", "-t", name])
             .status();
 
-        let result = create_session(name, dir, None, None, "test-uuid-123", true, "claude");
+        let result = create_session(name, dir, None, None, "test-uuid-123", true, "claude", None);
         assert!(result.is_ok());
 
         let session = result.unwrap();
