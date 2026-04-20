@@ -1,6 +1,7 @@
 mod app;
 mod event;
 mod git;
+mod preferences;
 mod process_hook;
 mod recent_dirs;
 mod session;
@@ -79,7 +80,12 @@ fn main() -> Result<()> {
 
     let mut session_list = SessionList::new(alive);
     let recent_dirs = recent_dirs::recent_directories(usize::MAX).unwrap_or_default();
-    let mut app = App::with_recent_dirs(recent_dirs.clone());
+    let last_model = preferences::load_last_model();
+    let mut app = App::with_recent_dirs_mode_and_model(
+        recent_dirs.clone(),
+        app::FormMode::NewTask,
+        last_model.as_deref(),
+    );
     let mut screen = Screen::SessionList;
     let mut launch_state: Option<LaunchState> = None;
     let mut running = true;
@@ -115,7 +121,12 @@ fn main() -> Result<()> {
                                 SessionListAction::NewTask => {
                                     let recent =
                                         recent_dirs::recent_directories(usize::MAX).unwrap_or_default();
-                                    app = App::with_recent_dirs(recent);
+                                    let last_model = preferences::load_last_model();
+                                    app = App::with_recent_dirs_mode_and_model(
+                                        recent,
+                                        app::FormMode::NewTask,
+                                        last_model.as_deref(),
+                                    );
                                     screen = Screen::NewTask;
                                 }
                                 SessionListAction::NewTmuxSession => {
@@ -147,8 +158,12 @@ fn main() -> Result<()> {
                                     prompt,
                                     claude_args,
                                     claude_command,
+                                    model_selection,
                                 } => {
                                     let session_name = tmux::sanitize_session_name(&title);
+                                    let _ = preferences::save_last_model(
+                                        model_selection.model_id(),
+                                    );
                                     let state = spawn_launch(
                                         session_name,
                                         title,
@@ -158,6 +173,7 @@ fn main() -> Result<()> {
                                         prompt,
                                         claude_args,
                                         claude_command,
+                                        model_selection,
                                     );
                                     launch_state = Some(state);
                                     screen = Screen::Launching;
@@ -310,6 +326,7 @@ fn spawn_launch(
     prompt: Option<String>,
     claude_args: Option<String>,
     claude_command: String,
+    model_selection: app::ModelSelection,
 ) -> LaunchState {
     let (progress_tx, progress_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
@@ -322,6 +339,7 @@ fn spawn_launch(
             prompt.as_deref(),
             claude_args.as_deref(),
             &claude_command,
+            model_selection,
             &progress_tx,
         );
         let _ = result_tx.send(result.map_err(|e| format!("{e}")));
@@ -346,6 +364,7 @@ fn launch_session(
     prompt: Option<&str>,
     claude_args: Option<&str>,
     claude_command: &str,
+    model_selection: app::ModelSelection,
     progress: &mpsc::Sender<String>,
 ) -> Result<()> {
     let session_name = tmux::sanitize_session_name(title);
@@ -404,6 +423,7 @@ fn launch_session(
         claude_session_id.clone(),
         directory.to_string(),
         claude_command.to_string(),
+        model_selection.model_id().map(str::to_string),
     )?;
 
     let tmux_session = match tmux::create_session(
@@ -414,6 +434,7 @@ fn launch_session(
         &claude_session_id,
         use_worktree,
         claude_command,
+        model_selection.model_id(),
     ) {
         Ok(s) => s,
         Err(e) => {

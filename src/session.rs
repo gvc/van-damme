@@ -42,6 +42,8 @@ pub struct SessionRecord {
     pub state: SessionState,
     #[serde(default = "default_claude_command")]
     pub claude_command: String,
+    #[serde(default)]
+    pub model_id: Option<String>,
 }
 
 fn default_state() -> SessionState {
@@ -169,6 +171,7 @@ pub fn add_session(
     claude_session_id: String,
     directory: String,
     claude_command: String,
+    model_id: Option<String>,
 ) -> Result<SessionRecord> {
     let path = default_db_path()?;
     add_session_to(
@@ -178,6 +181,7 @@ pub fn add_session(
         Some(claude_session_id),
         directory,
         claude_command,
+        model_id,
     )
 }
 
@@ -195,6 +199,7 @@ pub fn add_plain_session(
         None,
         directory,
         "claude".to_string(),
+        None,
     )
 }
 
@@ -205,6 +210,7 @@ fn add_session_to(
     claude_session_id: Option<String>,
     directory: String,
     claude_command: String,
+    model_id: Option<String>,
 ) -> Result<SessionRecord> {
     let mut db = load_db_from(path)?;
     let created_at = SystemTime::now()
@@ -220,6 +226,7 @@ fn add_session_to(
         created_at,
         state: SessionState::Idle,
         claude_command,
+        model_id,
     };
 
     db.sessions.push(record.clone());
@@ -246,7 +253,7 @@ mod tests {
             directory: "/tmp".to_string(),
             created_at: 1700000000,
             state: SessionState::Idle,
-            claude_command: "claude".to_string(),
+            claude_command: "claude".to_string(), model_id: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         let deserialized: SessionRecord = serde_json::from_str(&json).unwrap();
@@ -263,7 +270,7 @@ mod tests {
                 directory: "/home/user".to_string(),
                 created_at: 1700000000,
                 state: SessionState::Idle,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             }],
         };
         let json = serde_json::to_string_pretty(&db).unwrap();
@@ -288,7 +295,7 @@ mod tests {
             "test-session".to_string(),
             Some("test-uuid-123".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
 
@@ -311,7 +318,7 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
         add_session_to(
@@ -320,7 +327,7 @@ mod tests {
             "second".to_string(),
             Some("uuid-second".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
 
@@ -337,7 +344,7 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
         add_session_to(
@@ -346,7 +353,7 @@ mod tests {
             "second".to_string(),
             Some("uuid-second".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
 
@@ -372,7 +379,7 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
         add_session_to(
@@ -381,7 +388,7 @@ mod tests {
             "second".to_string(),
             Some("uuid-second".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
 
@@ -401,7 +408,7 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
 
@@ -422,7 +429,7 @@ mod tests {
                 directory: "/home".to_string(),
                 created_at: 999,
                 state: SessionState::Working,
-                claude_command: "claude".to_string(),
+                claude_command: "claude".to_string(), model_id: None,
             }],
         };
         save_db_to(&path, &db).unwrap();
@@ -440,7 +447,7 @@ mod tests {
             "my-session".to_string(),
             Some("uuid-1".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
 
@@ -482,7 +489,7 @@ mod tests {
             "my-session".to_string(),
             Some("uuid-1".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(),
+            "claude".to_string(), None,
         )
         .unwrap();
 
@@ -529,5 +536,56 @@ mod tests {
         }"#;
         let record: SessionRecord = serde_json::from_str(json).unwrap();
         assert_eq!(record.claude_command, "claude");
+    }
+
+    #[test]
+    fn test_model_id_defaults_to_none_on_deserialize() {
+        // Legacy record without model_id should deserialize with None
+        let json = r#"{
+            "tmux_session_id": "$1",
+            "tmux_session_name": "legacy",
+            "claude_session_id": null,
+            "directory": "/tmp",
+            "created_at": 100
+        }"#;
+        let record: SessionRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.model_id, None);
+    }
+
+    #[test]
+    fn test_session_record_with_model_id_roundtrip() {
+        let (_tmp, path) = temp_db_path();
+        let record = add_session_to(
+            &path,
+            "$1".to_string(),
+            "model-session".to_string(),
+            Some("uuid-123".to_string()),
+            "/tmp".to_string(),
+            "claude".to_string(),
+            Some("claude-sonnet-4-6".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(record.model_id, Some("claude-sonnet-4-6".to_string()));
+
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions[0].model_id, Some("claude-sonnet-4-6".to_string()));
+    }
+
+    #[test]
+    fn test_add_session_with_none_model_id() {
+        let (_tmp, path) = temp_db_path();
+        let record = add_session_to(
+            &path,
+            "$1".to_string(),
+            "no-model-session".to_string(),
+            Some("uuid-456".to_string()),
+            "/tmp".to_string(),
+            "claude".to_string(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(record.model_id, None);
     }
 }

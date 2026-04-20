@@ -136,6 +136,62 @@ pub enum GitMode {
     Branch,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelSelection {
+    #[default]
+    Default,
+    Opus46,
+    Sonnet46,
+    Haiku45,
+}
+
+impl ModelSelection {
+    pub const ALL: &'static [ModelSelection] = &[
+        ModelSelection::Default,
+        ModelSelection::Opus46,
+        ModelSelection::Sonnet46,
+        ModelSelection::Haiku45,
+    ];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ModelSelection::Default => "default",
+            ModelSelection::Opus46 => "opus-4-6",
+            ModelSelection::Sonnet46 => "sonnet-4-6",
+            ModelSelection::Haiku45 => "haiku-4-5",
+        }
+    }
+
+    /// Full model ID passed as `--model <id>`. Returns None for Default (no flag emitted).
+    pub fn model_id(self) -> Option<&'static str> {
+        match self {
+            ModelSelection::Default => None,
+            ModelSelection::Opus46 => Some("claude-opus-4-6"),
+            ModelSelection::Sonnet46 => Some("claude-sonnet-4-6"),
+            ModelSelection::Haiku45 => Some("claude-haiku-4-5-20251001"),
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let idx = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(idx + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let idx = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    /// Find a ModelSelection from its model_id string. Returns Default for unknown IDs.
+    pub fn from_model_id(id: &str) -> Self {
+        Self::ALL
+            .iter()
+            .find(|&&m| m.model_id() == Some(id))
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputField {
     Title,
@@ -145,6 +201,7 @@ pub enum InputField {
     Prompt,
     ClaudeArgs,
     ClaudeCommand,
+    ModelSelection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +216,7 @@ pub enum Action {
         prompt: Option<String>,
         claude_args: Option<String>,
         claude_command: String,
+        model_selection: ModelSelection,
     },
     SubmitTmuxSession {
         title: String,
@@ -178,6 +236,7 @@ pub struct App {
     pub prompt_input: Input,
     pub claude_args_input: Input,
     pub claude_command_input: Input,
+    pub model_selection: ModelSelection,
     pub dir_suggestion: Option<String>,
     pub error_message: Option<String>,
     pub recent_dirs: Vec<String>,
@@ -194,16 +253,29 @@ impl App {
         Self::with_recent_dirs(Vec::new())
     }
 
+    #[cfg(test)]
     pub fn with_recent_dirs(recent_dirs: Vec<String>) -> Self {
         Self::with_recent_dirs_and_mode(recent_dirs, FormMode::NewTask)
     }
 
     pub fn with_recent_dirs_and_mode(recent_dirs: Vec<String>, form_mode: FormMode) -> Self {
+        Self::with_recent_dirs_mode_and_model(recent_dirs, form_mode, None)
+    }
+
+    pub fn with_recent_dirs_mode_and_model(
+        recent_dirs: Vec<String>,
+        form_mode: FormMode,
+        last_model: Option<&str>,
+    ) -> Self {
         let default_dir = recent_dirs.first().cloned().unwrap_or_else(|| {
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default()
         });
+
+        let model_selection = last_model
+            .map(ModelSelection::from_model_id)
+            .unwrap_or_default();
 
         Self {
             running: true,
@@ -216,6 +288,7 @@ impl App {
             prompt_input: Input::default(),
             claude_args_input: Input::default(),
             claude_command_input: Input::new("claude".to_string()),
+            model_selection,
             dir_suggestion: None,
             error_message: None,
             recent_dirs,
@@ -253,6 +326,7 @@ impl App {
                         | InputField::BranchName
                         | InputField::ClaudeArgs
                         | InputField::ClaudeCommand
+                        | InputField::ModelSelection
                 )
             {
                 self.focused_field = InputField::Prompt;
@@ -297,6 +371,14 @@ impl App {
                     GitMode::Worktree => GitMode::Branch,
                     GitMode::Branch => GitMode::Worktree,
                 };
+                Action::None
+            }
+            KeyCode::Left if self.focused_field == InputField::ModelSelection => {
+                self.model_selection = self.model_selection.prev();
+                Action::None
+            }
+            KeyCode::Right if self.focused_field == InputField::ModelSelection => {
+                self.model_selection = self.model_selection.next();
                 Action::None
             }
             KeyCode::Enter => self.handle_enter(),
@@ -345,6 +427,18 @@ impl App {
                     InputField::ClaudeCommand => {
                         self.claude_command_input
                             .handle_event(&crossterm::event::Event::Key(key));
+                    }
+                    InputField::ModelSelection => {
+                        // Left/Right handled above; < and > as convenience aliases
+                        match key.code {
+                            KeyCode::Char('<') => {
+                                self.model_selection = self.model_selection.prev();
+                            }
+                            KeyCode::Char('>') => {
+                                self.model_selection = self.model_selection.next();
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 self.error_message = None;
@@ -532,7 +626,8 @@ impl App {
                     InputField::Title
                 }
             }
-            InputField::ClaudeCommand => InputField::Title,
+            InputField::ClaudeCommand => InputField::ModelSelection,
+            InputField::ModelSelection => InputField::Title,
         };
     }
 
@@ -547,7 +642,7 @@ impl App {
         self.focused_field = match self.focused_field {
             InputField::Title => {
                 if self.show_advanced {
-                    InputField::ClaudeCommand
+                    InputField::ModelSelection
                 } else {
                     InputField::Prompt
                 }
@@ -568,6 +663,7 @@ impl App {
             }
             InputField::ClaudeArgs => InputField::Prompt,
             InputField::ClaudeCommand => InputField::ClaudeArgs,
+            InputField::ModelSelection => InputField::ClaudeCommand,
         };
     }
 
@@ -638,6 +734,7 @@ impl App {
             prompt,
             claude_args,
             claude_command,
+            model_selection: self.model_selection,
         }
     }
 
@@ -672,7 +769,7 @@ impl App {
             } else {
                 0
             };
-            2 + branch_extra + 4 + 4 // git mode (label + selector) + branch (conditional) + args (label + input) + command (label + input)
+            2 + branch_extra + 4 + 4 + 2 // git mode + branch (conditional) + args + command + model selector
         } else {
             0
         };
@@ -740,6 +837,8 @@ impl App {
             constraints.push(Constraint::Length(3)); // Claude args input
             constraints.push(Constraint::Length(1)); // Claude command label
             constraints.push(Constraint::Length(3)); // Claude command input
+            constraints.push(Constraint::Length(1)); // Model selector label
+            constraints.push(Constraint::Length(1)); // Model selector widget
         }
         constraints.push(Constraint::Min(1)); // Hints
         let chunks = Layout::vertical(constraints).split(inner);
@@ -786,6 +885,8 @@ impl App {
         let args_input_idx;
         let cmd_label_idx;
         let cmd_input_idx;
+        let model_label_idx;
+        let model_selector_idx;
         if self.show_advanced {
             args_label_idx = Some(next_idx);
             next_idx += 1;
@@ -795,11 +896,17 @@ impl App {
             next_idx += 1;
             cmd_input_idx = Some(next_idx);
             next_idx += 1;
+            model_label_idx = Some(next_idx);
+            next_idx += 1;
+            model_selector_idx = Some(next_idx);
+            next_idx += 1;
         } else {
             args_label_idx = None;
             args_input_idx = None;
             cmd_label_idx = None;
             cmd_input_idx = None;
+            model_label_idx = None;
+            model_selector_idx = None;
         }
         let hints_idx = next_idx;
 
@@ -997,8 +1104,25 @@ impl App {
         if self.show_advanced
             && let (Some(cl_idx), Some(ci_idx)) = (cmd_label_idx, cmd_input_idx)
         {
-            let cmd_label = Paragraph::new("Claude command (default: claude):")
-                .style(Style::default().fg(theme::TEXT).bg(theme::BG));
+            let cmd_label_text = if self.model_selection != ModelSelection::Default {
+                Line::from(vec![
+                    Span::styled(
+                        "Claude command (default: claude):  ",
+                        Style::default().fg(theme::TEXT).bg(theme::BG),
+                    ),
+                    Span::styled(
+                        format!("[model: {}]", self.model_selection.display_name()),
+                        Style::default().fg(theme::CYAN).bg(theme::BG),
+                    ),
+                ])
+            } else {
+                Line::from(Span::styled(
+                    "Claude command (default: claude):",
+                    Style::default().fg(theme::TEXT).bg(theme::BG),
+                ))
+            };
+            let cmd_label =
+                Paragraph::new(cmd_label_text).style(Style::default().bg(theme::BG));
             frame.render_widget(cmd_label, chunks[cl_idx]);
 
             let cmd_border_color = if self.focused_field == InputField::ClaudeCommand {
@@ -1017,11 +1141,49 @@ impl App {
             frame.render_widget(cmd_para, chunks[ci_idx]);
         }
 
+        // Model selector (only when advanced is shown)
+        if self.show_advanced
+            && let (Some(ml_idx), Some(ms_idx)) = (model_label_idx, model_selector_idx)
+        {
+            let model_label = Paragraph::new("Model:")
+                .style(Style::default().fg(theme::TEXT).bg(theme::BG));
+            frame.render_widget(model_label, chunks[ml_idx]);
+
+            let model_focused = self.focused_field == InputField::ModelSelection;
+            let mut spans = vec![Span::styled(
+                if model_focused { "< " } else { "  " },
+                Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
+            )];
+            for (i, &variant) in ModelSelection::ALL.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled("  ", Style::default().bg(theme::BG)));
+                }
+                let style = if variant == self.model_selection {
+                    Style::default().fg(theme::BG).bg(theme::ORANGE_BRIGHT)
+                } else {
+                    Style::default().fg(theme::GRAY_DIM).bg(theme::BG)
+                };
+                spans.push(Span::styled(
+                    format!(" {} ", variant.display_name()),
+                    style,
+                ));
+            }
+            spans.push(Span::styled(
+                if model_focused { " >" } else { "  " },
+                Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
+            ));
+            let selector_para =
+                Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::BG));
+            frame.render_widget(selector_para, chunks[ms_idx]);
+        }
+
         // Hints + error
         let hint_text = if self.show_recent_dirs {
             "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::GitMode {
             "←/→: toggle  |  Tab: next  |  Ctrl+A: basic  |  Enter: submit  |  Esc: quit"
+        } else if self.focused_field == InputField::ModelSelection {
+            "←/→: cycle model  |  Tab: next  |  Ctrl+A: basic  |  Enter: submit  |  Esc: quit"
         } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
             if !self.recent_dirs.is_empty() {
                 "Tab/→: complete  |  Ctrl+D: recent dirs  |  Ctrl+A: advanced  |  Enter: submit  |  Esc: quit"
@@ -1104,8 +1266,8 @@ impl App {
 
         // Place cursor in focused input
         match self.focused_field {
-            InputField::GitMode => {
-                // No cursor for the selector
+            InputField::GitMode | InputField::ModelSelection => {
+                // No cursor for selector fields
             }
             _ => {
                 let (cursor_input, cursor_area) = match self.focused_field {
@@ -1121,7 +1283,7 @@ impl App {
                     InputField::ClaudeCommand => {
                         (&self.claude_command_input, cmd_inner.unwrap_or(title_inner))
                     }
-                    InputField::GitMode => unreachable!(),
+                    InputField::GitMode | InputField::ModelSelection => unreachable!(),
                 };
                 let visual_cursor = cursor_input.visual_cursor() as u16;
                 let inner_width = cursor_area.width;
@@ -1395,6 +1557,9 @@ mod tests {
         assert_eq!(app.focused_field, InputField::ClaudeCommand);
 
         app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::ModelSelection);
+
+        app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::Title);
     }
 
@@ -1443,6 +1608,7 @@ mod tests {
                 prompt: None,
                 claude_args: None,
                 claude_command: "claude".to_string(),
+                model_selection: ModelSelection::Default,
             }
         );
     }
@@ -1505,6 +1671,10 @@ mod tests {
         assert_eq!(app.focused_field, InputField::ClaudeArgs);
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.focused_field, InputField::ClaudeCommand);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.focused_field, InputField::ModelSelection);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.focused_field, InputField::ClaudeCommand);
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.focused_field, InputField::ClaudeArgs);
         app.handle_key(key(KeyCode::Up));
@@ -1543,6 +1713,7 @@ mod tests {
                 prompt: Some("fix the bug".to_string()),
                 claude_args: None,
                 claude_command: "claude".to_string(),
+                model_selection: ModelSelection::Default,
             }
         );
     }
@@ -1576,6 +1747,7 @@ mod tests {
                 prompt: None,
                 claude_args: Some("--model sonnet".to_string()),
                 claude_command: "claude".to_string(),
+                model_selection: ModelSelection::Default,
             }
         );
     }
@@ -2242,5 +2414,166 @@ mod tests {
         let mut app = tmux_app();
         app.handle_key(ctrl_a());
         assert!(!app.show_advanced);
+    }
+
+    // --- ModelSelection tests ---
+
+    #[test]
+    fn test_model_selection_default_on_new_app() {
+        let app = App::new();
+        assert_eq!(app.model_selection, ModelSelection::Default);
+    }
+
+    #[test]
+    fn test_model_selection_display_names() {
+        assert_eq!(ModelSelection::Default.display_name(), "default");
+        assert_eq!(ModelSelection::Opus46.display_name(), "opus-4-6");
+        assert_eq!(ModelSelection::Sonnet46.display_name(), "sonnet-4-6");
+        assert_eq!(ModelSelection::Haiku45.display_name(), "haiku-4-5");
+    }
+
+    #[test]
+    fn test_model_selection_model_ids() {
+        assert_eq!(ModelSelection::Default.model_id(), None);
+        assert_eq!(ModelSelection::Opus46.model_id(), Some("claude-opus-4-6"));
+        assert_eq!(
+            ModelSelection::Sonnet46.model_id(),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(
+            ModelSelection::Haiku45.model_id(),
+            Some("claude-haiku-4-5-20251001")
+        );
+    }
+
+    #[test]
+    fn test_model_selection_next_wraps() {
+        let mut m = ModelSelection::Default;
+        m = m.next();
+        assert_eq!(m, ModelSelection::Opus46);
+        m = m.next();
+        assert_eq!(m, ModelSelection::Sonnet46);
+        m = m.next();
+        assert_eq!(m, ModelSelection::Haiku45);
+        m = m.next();
+        assert_eq!(m, ModelSelection::Default); // wraps
+    }
+
+    #[test]
+    fn test_model_selection_prev_wraps() {
+        let mut m = ModelSelection::Default;
+        m = m.prev();
+        assert_eq!(m, ModelSelection::Haiku45); // wraps
+        m = m.prev();
+        assert_eq!(m, ModelSelection::Sonnet46);
+        m = m.prev();
+        assert_eq!(m, ModelSelection::Opus46);
+        m = m.prev();
+        assert_eq!(m, ModelSelection::Default);
+    }
+
+    #[test]
+    fn test_model_selection_from_model_id_known() {
+        assert_eq!(
+            ModelSelection::from_model_id("claude-opus-4-6"),
+            ModelSelection::Opus46
+        );
+        assert_eq!(
+            ModelSelection::from_model_id("claude-sonnet-4-6"),
+            ModelSelection::Sonnet46
+        );
+        assert_eq!(
+            ModelSelection::from_model_id("claude-haiku-4-5-20251001"),
+            ModelSelection::Haiku45
+        );
+    }
+
+    #[test]
+    fn test_model_selection_from_model_id_unknown_falls_back() {
+        assert_eq!(
+            ModelSelection::from_model_id("unknown-model"),
+            ModelSelection::Default
+        );
+    }
+
+    #[test]
+    fn test_model_selection_with_last_model_sets_correct_variant() {
+        let app = App::with_recent_dirs_mode_and_model(
+            Vec::new(),
+            FormMode::NewTask,
+            Some("claude-sonnet-4-6"),
+        );
+        assert_eq!(app.model_selection, ModelSelection::Sonnet46);
+    }
+
+    #[test]
+    fn test_model_selection_with_none_last_model_defaults() {
+        let app =
+            App::with_recent_dirs_mode_and_model(Vec::new(), FormMode::NewTask, None);
+        assert_eq!(app.model_selection, ModelSelection::Default);
+    }
+
+    #[test]
+    fn test_right_arrow_cycles_model_selection_forward() {
+        let mut app = App::new();
+        app.focused_field = InputField::ModelSelection;
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.model_selection, ModelSelection::Opus46);
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.model_selection, ModelSelection::Sonnet46);
+    }
+
+    #[test]
+    fn test_left_arrow_cycles_model_selection_backward() {
+        let mut app = App::new();
+        app.focused_field = InputField::ModelSelection;
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(app.model_selection, ModelSelection::Haiku45);
+    }
+
+    #[test]
+    fn test_submit_carries_model_selection() {
+        let mut app = App::new();
+        app.model_selection = ModelSelection::Sonnet46;
+        for ch in "my task".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        let action = app.handle_key(key(KeyCode::Enter));
+        match action {
+            Action::Submit { model_selection, .. } => {
+                assert_eq!(model_selection, ModelSelection::Sonnet46);
+            }
+            _ => panic!("Expected Submit action"),
+        }
+    }
+
+    #[test]
+    fn test_ctrl_a_collapse_resets_model_selection_focus() {
+        let mut app = App::new();
+        app.show_advanced = true;
+        app.focused_field = InputField::ModelSelection;
+        app.handle_key(ctrl_a()); // hide advanced
+        assert!(!app.show_advanced);
+        assert_eq!(app.focused_field, InputField::Prompt);
+    }
+
+    #[test]
+    fn test_tab_includes_model_selection_in_advanced_cycle() {
+        let mut app = App::new();
+        app.show_advanced = true;
+        app.focused_field = InputField::ClaudeCommand;
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::ModelSelection);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Title);
+    }
+
+    #[test]
+    fn test_prev_field_from_title_goes_to_model_selection_in_advanced() {
+        let mut app = App::new();
+        app.show_advanced = true;
+        app.focused_field = InputField::Title;
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.focused_field, InputField::ModelSelection);
     }
 }
