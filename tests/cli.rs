@@ -2,7 +2,7 @@ use std::process::Command;
 
 #[test]
 fn test_version_flag() {
-    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+    let output = Command::new(env!("CARGO_BIN_EXE_vd"))
         .arg("--version")
         .output()
         .expect("failed to run binary");
@@ -14,7 +14,7 @@ fn test_version_flag() {
 
 #[test]
 fn test_version_short_flag() {
-    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+    let output = Command::new(env!("CARGO_BIN_EXE_vd"))
         .arg("-V")
         .output()
         .expect("failed to run binary");
@@ -25,7 +25,7 @@ fn test_version_short_flag() {
 
 #[test]
 fn test_process_hook_writes_to_debug_log() {
-    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+    let output = Command::new(env!("CARGO_BIN_EXE_vd"))
         .arg("process-hook")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -55,7 +55,7 @@ fn test_process_hook_writes_to_debug_log() {
 fn test_add_dir_with_explicit_path() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().to_string_lossy().to_string();
-    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+    let output = Command::new(env!("CARGO_BIN_EXE_vd"))
         .args(["add-dir", &dir])
         .output()
         .expect("failed to run binary");
@@ -67,7 +67,7 @@ fn test_add_dir_with_explicit_path() {
 
 #[test]
 fn test_add_dir_defaults_to_cwd() {
-    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+    let output = Command::new(env!("CARGO_BIN_EXE_vd"))
         .arg("add-dir")
         .output()
         .expect("failed to run binary");
@@ -78,7 +78,7 @@ fn test_add_dir_defaults_to_cwd() {
 
 #[test]
 fn test_process_hook_rejects_invalid_json() {
-    let output = Command::new(env!("CARGO_BIN_EXE_van-damme"))
+    let output = Command::new(env!("CARGO_BIN_EXE_vd"))
         .arg("process-hook")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
