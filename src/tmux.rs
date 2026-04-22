@@ -109,7 +109,9 @@ pub fn create_session(
         .output()?;
     if !send_output.status.success() {
         let stderr = String::from_utf8_lossy(&send_output.stderr);
-        return Err(eyre!("Failed to send claude command to pane '{target}': {stderr}"));
+        return Err(eyre!(
+            "Failed to send claude command to pane '{target}': {stderr}"
+        ));
     }
 
     // Capture session ID
@@ -244,9 +246,7 @@ fn build_claude_cmd(
         parts.push(' ');
         parts.push_str(&shell_escape(p));
     }
-    format!(
-        "{parts} || {{ echo ''; echo '[van-damme] claude exited with code '$?; read; }}"
-    )
+    format!("{parts} || {{ echo ''; echo '[van-damme] claude exited with code '$?; read; }}")
 }
 
 /// Escape a string for safe use as a single shell argument.
@@ -407,7 +407,10 @@ mod tests {
             None,
         );
         assert!(cmd.contains("--worktree my-session"), "cmd: {cmd}");
-        assert!(cmd.contains("--model claude-haiku-4-5-20251001"), "cmd: {cmd}");
+        assert!(
+            cmd.contains("--model claude-haiku-4-5-20251001"),
+            "cmd: {cmd}"
+        );
     }
 
     #[test]

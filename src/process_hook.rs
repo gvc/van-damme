@@ -38,7 +38,8 @@ pub fn run() -> Result<()> {
         && let Ok(Some(record)) = session::find_by_claude_session(&event.session_id)
     {
         let window_name = tmux::window_name_from_command(&record.claude_command);
-        let _ = tmux::setup_editor_window(&record.tmux_session_name, &record.directory, window_name);
+        let _ =
+            tmux::setup_editor_window(&record.tmux_session_name, &record.directory, window_name);
     }
 
     Ok(())

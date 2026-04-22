@@ -253,7 +253,8 @@ mod tests {
             directory: "/tmp".to_string(),
             created_at: 1700000000,
             state: SessionState::Idle,
-            claude_command: "claude".to_string(), model_id: None,
+            claude_command: "claude".to_string(),
+            model_id: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         let deserialized: SessionRecord = serde_json::from_str(&json).unwrap();
@@ -270,7 +271,8 @@ mod tests {
                 directory: "/home/user".to_string(),
                 created_at: 1700000000,
                 state: SessionState::Idle,
-                claude_command: "claude".to_string(), model_id: None,
+                claude_command: "claude".to_string(),
+                model_id: None,
             }],
         };
         let json = serde_json::to_string_pretty(&db).unwrap();
@@ -295,7 +297,8 @@ mod tests {
             "test-session".to_string(),
             Some("test-uuid-123".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
 
@@ -318,7 +321,8 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
         add_session_to(
@@ -327,7 +331,8 @@ mod tests {
             "second".to_string(),
             Some("uuid-second".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
 
@@ -344,7 +349,8 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
         add_session_to(
@@ -353,7 +359,8 @@ mod tests {
             "second".to_string(),
             Some("uuid-second".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
 
@@ -379,7 +386,8 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
         add_session_to(
@@ -388,7 +396,8 @@ mod tests {
             "second".to_string(),
             Some("uuid-second".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
 
@@ -408,7 +417,8 @@ mod tests {
             "first".to_string(),
             Some("uuid-first".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
 
@@ -429,7 +439,8 @@ mod tests {
                 directory: "/home".to_string(),
                 created_at: 999,
                 state: SessionState::Working,
-                claude_command: "claude".to_string(), model_id: None,
+                claude_command: "claude".to_string(),
+                model_id: None,
             }],
         };
         save_db_to(&path, &db).unwrap();
@@ -447,7 +458,8 @@ mod tests {
             "my-session".to_string(),
             Some("uuid-1".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
 
@@ -489,7 +501,8 @@ mod tests {
             "my-session".to_string(),
             Some("uuid-1".to_string()),
             "/tmp".to_string(),
-            "claude".to_string(), None,
+            "claude".to_string(),
+            None,
         )
         .unwrap();
 

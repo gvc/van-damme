@@ -119,8 +119,8 @@ fn main() -> Result<()> {
                                     running = false;
                                 }
                                 SessionListAction::NewTask => {
-                                    let recent =
-                                        recent_dirs::recent_directories(usize::MAX).unwrap_or_default();
+                                    let recent = recent_dirs::recent_directories(usize::MAX)
+                                        .unwrap_or_default();
                                     let last_model = preferences::load_last_model();
                                     app = App::with_recent_dirs_mode_and_model(
                                         recent,
@@ -130,8 +130,8 @@ fn main() -> Result<()> {
                                     screen = Screen::NewTask;
                                 }
                                 SessionListAction::NewTmuxSession => {
-                                    let recent =
-                                        recent_dirs::recent_directories(usize::MAX).unwrap_or_default();
+                                    let recent = recent_dirs::recent_directories(usize::MAX)
+                                        .unwrap_or_default();
                                     app = App::with_recent_dirs_and_mode(
                                         recent,
                                         app::FormMode::NewTmuxSession,
@@ -160,9 +160,8 @@ fn main() -> Result<()> {
                                     model_selection,
                                 } => {
                                     let session_name = tmux::sanitize_session_name(&title);
-                                    let _ = preferences::save_last_model(
-                                        model_selection.model_id(),
-                                    );
+                                    let _ =
+                                        preferences::save_last_model(model_selection.model_id());
                                     let state = spawn_launch(
                                         session_name,
                                         title,

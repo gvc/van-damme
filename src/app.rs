@@ -10,7 +10,7 @@ use std::path::Path;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::theme;
+use crate::{recent_dirs, theme};
 
 /// Break text into lines of at most `width` characters (character-level wrapping).
 /// Returns a Vec of line strings. This matches the cursor math which uses
@@ -315,9 +315,7 @@ impl App {
                 GitMode::Branch => GitMode::Worktree,
             };
             // If switching away from Branch and BranchName is focused, move to Directory
-            if self.git_mode == GitMode::Worktree
-                && self.focused_field == InputField::BranchName
-            {
+            if self.git_mode == GitMode::Worktree && self.focused_field == InputField::BranchName {
                 self.focused_field = InputField::Directory;
             }
             return Action::None;
@@ -510,7 +508,11 @@ impl App {
                 self.recent_dir_scroll = 0;
                 Action::None
             }
-            KeyCode::Char(c) if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.recent_dir_query.push(c);
                 let n = self.filtered_recent_dirs().len();
                 self.recent_dir_selected = if n > 0 { Some(0) } else { None };
@@ -625,9 +627,17 @@ impl App {
             return Action::None;
         }
 
+        // Create directory if it doesn't exist
         if !Path::new(&directory).is_dir() {
-            self.error_message = Some(format!("Directory does not exist: {directory}"));
-            return Action::None;
+            match std::fs::create_dir_all(&directory) {
+                Ok(_) => {
+                    let _ = recent_dirs::record_directory(&directory);
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Cannot create directory: {e}"));
+                    return Action::None;
+                }
+            }
         }
 
         if self.form_mode == FormMode::NewTmuxSession {
@@ -698,7 +708,11 @@ impl App {
         let prompt_box_height = (prompt_lines + 2).min(max_prompt_height).max(3);
 
         // Branch name field appears when git mode is Branch
-        let branch_extra: u16 = if self.git_mode == GitMode::Branch { 4 } else { 0 };
+        let branch_extra: u16 = if self.git_mode == GitMode::Branch {
+            4
+        } else {
+            0
+        };
 
         // Base: 2 (outer border) + 1 (title label) + 3 (title input) + 1 (dir label) + 3 (dir input)
         //       + branch_extra + 1 (prompt label) + prompt_box_height
@@ -956,17 +970,13 @@ impl App {
             } else {
                 Style::default().fg(theme::GRAY_DIM).bg(theme::BG)
             };
-            spans.push(Span::styled(
-                format!(" {} ", variant.display_name()),
-                style,
-            ));
+            spans.push(Span::styled(format!(" {} ", variant.display_name()), style));
         }
         spans.push(Span::styled(
             if model_focused { " >" } else { "  " },
             Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
         ));
-        let selector_para =
-            Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::BG));
+        let selector_para = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::BG));
         frame.render_widget(selector_para, chunks[model_selector_idx]);
 
         // Hints
@@ -1400,7 +1410,13 @@ mod tests {
     }
 
     #[test]
-    fn test_submit_with_nonexistent_directory() {
+    fn test_submit_with_nonexistent_directory_creates_it() {
+        use tempfile::TempDir;
+
+        let tmpdir = TempDir::new().unwrap();
+        let nested_path = tmpdir.path().join("new").join("nested").join("dir");
+        let nested_str = nested_path.to_string_lossy().to_string();
+
         let mut app = App::new();
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
@@ -1409,13 +1425,19 @@ mod tests {
         while !app.dir_input.value().is_empty() {
             app.handle_key(key(KeyCode::Backspace));
         }
-        for ch in "/nonexistent/path/12345".chars() {
+        for ch in nested_str.chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
+
+        // Verify directory doesn't exist yet
+        assert!(!nested_path.exists());
+
         let action = app.handle_key(key(KeyCode::Enter));
-        assert_eq!(action, Action::None);
-        assert!(app.error_message.is_some());
-        assert!(app.error_message.unwrap().contains("does not exist"));
+
+        // Should submit (not error)
+        assert!(matches!(action, Action::Submit { .. }));
+        // Directory should now exist
+        assert!(nested_path.exists());
     }
 
     #[test]
@@ -2194,8 +2216,7 @@ mod tests {
 
     #[test]
     fn test_model_selection_with_none_last_model_defaults() {
-        let app =
-            App::with_recent_dirs_mode_and_model(Vec::new(), FormMode::NewTask, None);
+        let app = App::with_recent_dirs_mode_and_model(Vec::new(), FormMode::NewTask, None);
         assert_eq!(app.model_selection, ModelSelection::Default);
     }
 
@@ -2226,7 +2247,9 @@ mod tests {
         }
         let action = app.handle_key(key(KeyCode::Enter));
         match action {
-            Action::Submit { model_selection, .. } => {
+            Action::Submit {
+                model_selection, ..
+            } => {
                 assert_eq!(model_selection, ModelSelection::Sonnet46);
             }
             _ => panic!("Expected Submit action"),
