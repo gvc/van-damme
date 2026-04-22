@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-TUI application for Claude in iTerm, built with Rust. Binary name: `van-damme`.
+TUI application to manage tmux and Claude sessions, built with Rust. Binary name: `vd`.
 
 ## Architecture
 

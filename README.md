@@ -110,7 +110,6 @@ The directory input field features filesystem tab-completion. As you type a path
 - **Rust** (edition 2024) — for building
 - **tmux** — must be installed and available in `$PATH`
 - **Claude Code CLI** (`claude`) — must be installed for the coding sessions to work
-- A terminal emulator (designed for iTerm on macOS)
 
 ## Dependencies
 
