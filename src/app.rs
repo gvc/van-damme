@@ -702,9 +702,9 @@ impl App {
 
         // Base: 2 (outer border) + 1 (title label) + 3 (title input) + 1 (dir label) + 3 (dir input)
         //       + branch_extra + 1 (prompt label) + prompt_box_height
-        //       + 1 (cmd label) + 3 (cmd input) + 1 (model label) + 1 (model selector) + 1 (hints)
+        //       + 1 (cmd label) + 3 (cmd input) + 1 (model selector) + 1 (hints)
         let form_height =
-            (18 + branch_extra + prompt_box_height).min(area.height.saturating_sub(2));
+            (17 + branch_extra + prompt_box_height).min(area.height.saturating_sub(2));
         // +1 for error line below the box
         let total_height = form_height + 1;
 
@@ -731,8 +731,20 @@ impl App {
         );
 
         let outer_block = Block::default()
-            .title(" New Task ")
-            .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+            .title_top(Line::from(Span::styled(
+                " New Task ",
+                Style::default().fg(theme::ORANGE_BRIGHT),
+            )))
+            .title_top(
+                Line::from(Span::styled(
+                    match self.git_mode {
+                        GitMode::Worktree => " [git: worktree] ",
+                        GitMode::Branch => " [git: branch] ",
+                    },
+                    Style::default().fg(theme::CYAN),
+                ))
+                .right_aligned(),
+            )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme::ORANGE))
             .style(Style::default().bg(theme::BG));
@@ -755,7 +767,6 @@ impl App {
             Constraint::Length(prompt_box_height), // Prompt input
             Constraint::Length(1),                 // Claude command label
             Constraint::Length(3),                 // Claude command input
-            Constraint::Length(1),                 // Model selector label
             Constraint::Length(1),                 // Model selector widget
             Constraint::Min(1),                    // Hints
         ]);
@@ -787,8 +798,6 @@ impl App {
         let cmd_label_idx = next_idx;
         next_idx += 1;
         let cmd_input_idx = next_idx;
-        next_idx += 1;
-        let model_label_idx = next_idx;
         next_idx += 1;
         let model_selector_idx = next_idx;
         next_idx += 1;
@@ -931,19 +940,6 @@ impl App {
             .style(Style::default().fg(theme::TEXT))
             .block(cmd_block);
         frame.render_widget(cmd_para, chunks[cmd_input_idx]);
-
-        // Model selector label (shows current git mode)
-        let model_label = Paragraph::new(Line::from(vec![
-            Span::styled("Model:  ", Style::default().fg(theme::TEXT).bg(theme::BG)),
-            Span::styled(
-                match self.git_mode {
-                    GitMode::Worktree => "[git: worktree]",
-                    GitMode::Branch => "[git: branch]",
-                },
-                Style::default().fg(theme::CYAN).bg(theme::BG),
-            ),
-        ]));
-        frame.render_widget(model_label, chunks[model_label_idx]);
 
         // Model selector widget
         let model_focused = self.focused_field == InputField::ModelSelection;
