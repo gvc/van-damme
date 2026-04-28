@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Flex, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, ListState, Paragraph},
 };
 
 use crate::session::{SessionRecord, SessionState};
@@ -25,7 +25,8 @@ pub enum SessionListAction {
 /// A row in the display list — either a group header or a selectable session.
 #[derive(Debug, Clone)]
 enum DisplayRow {
-    /// Non-selectable directory group header.
+    /// Non-selectable directory group header. String value used in tests.
+    #[allow(dead_code)]
     GroupHeader(String),
     /// Selectable session row. Stores index into `self.sessions`.
     Session(usize),
@@ -40,6 +41,10 @@ pub struct SessionList {
     pub status_message: Option<String>,
     /// When set, we're waiting for the user to confirm killing the session at this index.
     confirm_kill: Option<usize>,
+    /// Top card index for the scrollable card list.
+    card_scroll_offset: usize,
+    /// Cached tmux pane content for the selected session.
+    preview_content: Option<String>,
 }
 
 impl SessionList {
@@ -57,6 +62,8 @@ impl SessionList {
             list_state,
             status_message: None,
             confirm_kill: None,
+            card_scroll_offset: 0,
+            preview_content: None,
         }
     }
 
@@ -293,158 +300,374 @@ impl SessionList {
         self.refresh();
     }
 
+    /// Refresh the cached tmux pane preview for the currently selected session.
+    /// Call this on tick rather than on every render to avoid subprocess overhead.
+    pub fn refresh_preview(&mut self) {
+        if let Some(idx) = self.selected_session_index() {
+            let session_name = self.sessions[idx].tmux_session_name.clone();
+            self.preview_content = tmux::capture_pane(&session_name).ok();
+        } else {
+            self.preview_content = None;
+        }
+    }
+
     pub fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
-        let form_width = 90u16.min(area.width.saturating_sub(2));
-        let form_height = 30u16.min(area.height.saturating_sub(2));
-        // +1 for status message below the box
-        let total_height = form_height + 1;
-
-        let vertical = Layout::vertical([Constraint::Length(total_height)])
-            .flex(Flex::Center)
-            .split(area);
-        let horizontal = Layout::horizontal([Constraint::Length(form_width)])
-            .flex(Flex::Center)
-            .split(vertical[0]);
-        let outer_area = horizontal[0];
-
-        // Split into panel box and status line below
-        let outer_chunks =
-            Layout::vertical([Constraint::Length(form_height), Constraint::Length(1)])
-                .split(outer_area);
-        let panel_area = outer_chunks[0];
-        let status_area = outer_chunks[1];
-
-        frame.render_widget(Clear, panel_area);
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::BG)),
-            panel_area,
+            area,
         );
 
-        let outer_block = Block::default()
-            .title(" Active Sessions ")
-            .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::ORANGE))
-            .style(Style::default().bg(theme::BG));
-        let inner = outer_block.inner(panel_area);
-        frame.render_widget(outer_block, panel_area);
-
-        let chunks = Layout::vertical([
-            Constraint::Min(1),    // Session list
-            Constraint::Length(1), // Hints
+        const LEFT_WIDTH: u16 = 36;
+        let chunks = Layout::horizontal([
+            Constraint::Length(LEFT_WIDTH.min(area.width)),
+            Constraint::Min(0),
         ])
-        .split(inner);
+        .split(area);
 
-        if self.sessions.is_empty() {
-            let area = chunks[0];
-            let vertical_center = area.y + area.height / 2;
-            let centered_area = Rect::new(area.x, vertical_center, area.width, 1);
-            let empty = Paragraph::new("No active sessions. Press 'n' to create one.")
-                .style(Style::default().fg(theme::GRAY_DIM))
-                .alignment(Alignment::Center);
-            frame.render_widget(empty, centered_area);
-        } else {
-            let selected_row = self.list_state.selected();
-            let items: Vec<ListItem> = self
-                .display_rows
-                .iter()
-                .enumerate()
-                .map(|(row_idx, row)| match row {
-                    DisplayRow::GroupHeader(dir) => {
-                        if dir.is_empty() {
-                            // Blank separator line
-                            ListItem::new(Line::raw(""))
-                        } else {
-                            let line = Line::from(vec![Span::styled(
-                                dir.to_string(),
-                                Style::default().fg(theme::CYAN_VIVID),
-                            )]);
-                            ListItem::new(line)
-                        }
-                    }
-                    DisplayRow::Session(idx) => {
-                        let is_selected = selected_row == Some(row_idx);
-                        let s = &self.sessions[*idx];
-                        let (icon, icon_color) = if s.claude_session_id.is_none() {
-                            ("🖥️", theme::GRAY_DIM)
-                        } else {
-                            let color = match s.state {
-                                SessionState::Working => theme::ORANGE_BRIGHT,
-                                SessionState::WaitingUser => theme::CYAN,
-                                SessionState::Idle => theme::GRAY_DIM,
-                            };
-                            (s.state.icon(), color)
-                        };
-                        let command_tag = match &s.model_id {
-                            Some(m) => format!("[{} | {}]", s.claude_command, m),
-                            None => format!("[{}]", s.claude_command),
-                        };
-                        // All icons display as 2 terminal columns; "▸ " highlight prefix is 2.
-                        let content_used = 2 + 1 + s.tmux_session_name.len() + command_tag.len();
-                        let list_width = chunks[0].width as usize;
-                        let padding = list_width.saturating_sub(2 + content_used);
-                        let line = Line::from(vec![
-                            Span::styled(icon, Style::default().fg(icon_color)),
-                            Span::raw(" "),
-                            Span::styled(
-                                s.tmux_session_name.clone(),
-                                Style::default()
-                                    .fg(theme::SESSION_NAME)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::raw(" ".repeat(padding)),
-                            Span::styled(
-                                command_tag,
-                                Style::default().fg(if is_selected {
-                                    theme::CYAN_VIVID
-                                } else {
-                                    theme::GRAY_DIM
-                                }),
-                            ),
-                        ]);
-                        ListItem::new(line)
-                    }
-                })
-                .collect();
+        self.draw_session_panel(frame, chunks[0]);
+        self.draw_preview_panel(frame, chunks[1]);
 
-            let list = List::new(items)
-                .highlight_style(
-                    Style::default()
-                        .bg(theme::GRAY)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol("▸ ");
-
-            frame.render_stateful_widget(list, chunks[0], &mut self.list_state);
-        }
-
-        let hints = Paragraph::new(Line::from(Span::styled(
-            "j/k: navigate  |  a: attach  |  x: kill  |  n: new task  |  t: new tmux  |  q: quit",
-            Style::default().fg(theme::GRAY_DIM),
-        )))
-        .alignment(Alignment::Center);
-        frame.render_widget(hints, chunks[1]);
-
+        // Status message overlay at bottom center
         if let Some(ref msg) = self.status_message {
             let bg = if self.confirm_kill.is_some() {
                 theme::ORANGE
-            } else if msg.starts_with("Killed session") {
+            } else if msg.starts_with("Deleted session") {
                 theme::GREEN
             } else if msg.starts_with("Kill cancelled") {
                 theme::GRAY
             } else {
                 theme::ERROR
             };
-            let status = Paragraph::new(Line::from(Span::styled(
-                format!(" {msg} "),
-                Style::default().fg(Color::White).bg(bg),
-            )))
-            .alignment(Alignment::Center);
-            frame.render_widget(status, status_area);
+            let msg_text = format!(" {msg} ");
+            let status_width = (msg_text.len() as u16).min(area.width);
+            let status_x = area.x + area.width.saturating_sub(status_width) / 2;
+            let status_y = area.y + area.height.saturating_sub(1);
+            let status_area = Rect::new(status_x, status_y, status_width, 1);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    msg_text,
+                    Style::default().fg(Color::White).bg(bg),
+                )))
+                .alignment(Alignment::Center),
+                status_area,
+            );
         }
     }
+
+    fn draw_session_panel(&mut self, frame: &mut Frame, area: Rect) {
+        let selected_session_idx = self.selected_session_index();
+
+        let outer_block = Block::default()
+            .title(" ACTIVE SESSIONS ")
+            .title_style(
+                Style::default()
+                    .fg(theme::ORANGE_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme::ORANGE))
+            .style(Style::default().bg(theme::BG));
+        let inner = outer_block.inner(area);
+        frame.render_widget(outer_block, area);
+
+        let chunks = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(2), // hints
+        ])
+        .split(inner);
+        let cards_area = chunks[0];
+        let hints_area = chunks[1];
+
+        if self.sessions.is_empty() {
+            let y = cards_area.y + cards_area.height.saturating_sub(2) / 2;
+            frame.render_widget(
+                Paragraph::new("No active sessions.")
+                    .style(Style::default().fg(theme::GRAY_DIM))
+                    .alignment(Alignment::Center),
+                Rect::new(cards_area.x, y, cards_area.width, 1),
+            );
+            if y + 1 < cards_area.y + cards_area.height {
+                frame.render_widget(
+                    Paragraph::new("Press 'n' to create one.")
+                        .style(Style::default().fg(theme::GRAY_DIM))
+                        .alignment(Alignment::Center),
+                    Rect::new(cards_area.x, y + 1, cards_area.width, 1),
+                );
+            }
+        } else {
+            const CARD_HEIGHT: u16 = 5;
+            let visible_count = (cards_area.height / CARD_HEIGHT) as usize;
+
+            // Auto-scroll to keep selected card visible.
+            if let Some(sel_idx) = selected_session_idx {
+                if sel_idx < self.card_scroll_offset {
+                    self.card_scroll_offset = sel_idx;
+                } else if visible_count > 0 && sel_idx >= self.card_scroll_offset + visible_count {
+                    self.card_scroll_offset = sel_idx.saturating_sub(visible_count - 1);
+                }
+            }
+
+            let scroll = self.card_scroll_offset;
+            let mut y = cards_area.y;
+            for (i, session) in self.sessions.iter().enumerate().skip(scroll) {
+                if y + CARD_HEIGHT > cards_area.y + cards_area.height {
+                    break;
+                }
+                let card_area = Rect::new(cards_area.x, y, cards_area.width, CARD_HEIGHT);
+                draw_session_card(frame, card_area, session, selected_session_idx == Some(i));
+                y += CARD_HEIGHT;
+            }
+        }
+
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "j/k:navigate · a:attach · x:kill",
+                    Style::default().fg(theme::GRAY_DIM),
+                )),
+                Line::from(Span::styled(
+                    "n:new task · t:tmux · q:quit",
+                    Style::default().fg(theme::GRAY_DIM),
+                )),
+            ])
+            .alignment(Alignment::Center),
+            hints_area,
+        );
+    }
+
+    fn draw_preview_panel(&self, frame: &mut Frame, area: Rect) {
+        if area.width < 4 {
+            return;
+        }
+
+        let selected = self.selected_session_index().map(|i| &self.sessions[i]);
+
+        let (title, border_fg) = match selected {
+            Some(s) => (format!(" {} ", s.tmux_session_name), theme::ORANGE),
+            None => (" no session selected ".to_string(), theme::BLUE),
+        };
+
+        let outer_block = Block::default()
+            .title(title.as_str())
+            .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_fg))
+            .style(Style::default().bg(theme::BG));
+        let inner = outer_block.inner(area);
+        frame.render_widget(outer_block, area);
+
+        if let Some(ref content) = self.preview_content {
+            let lines: Vec<Line> = content
+                .lines()
+                .map(|l| Line::raw(l.trim_end().to_string()))
+                .collect();
+            let visible_height = inner.height as usize;
+            let skip = lines.len().saturating_sub(visible_height);
+            let visible: Vec<Line> = lines.into_iter().skip(skip).collect();
+            frame.render_widget(
+                Paragraph::new(visible).style(Style::default().fg(theme::TEXT)),
+                inner,
+            );
+        } else {
+            draw_ascii_art(frame, inner);
+        }
+    }
+}
+
+fn draw_session_card(
+    frame: &mut Frame,
+    area: Rect,
+    session: &SessionRecord,
+    is_selected: bool,
+) {
+    let (icon, state_color) = if session.claude_session_id.is_none() {
+        // Plain tmux session — use a neutral indicator
+        ("🖥", theme::GRAY_DIM)
+    } else {
+        let color = match session.state {
+            SessionState::Working => theme::ORANGE_BRIGHT,
+            SessionState::WaitingUser => theme::CYAN,
+            SessionState::Idle => theme::GRAY_DIM,
+        };
+        (session.state.icon(), color)
+    };
+
+    let border_fg = if is_selected {
+        theme::ORANGE_BRIGHT
+    } else {
+        theme::BLUE
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_fg))
+        .style(Style::default().bg(theme::BG));
+    let card_inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if card_inner.height < 3 || card_inner.width < 5 {
+        return;
+    }
+
+    let content_w = card_inner.width as usize;
+    // All state icons are emoji and display as 2 terminal columns.
+    const ICON_COLS: usize = 2;
+    const ICON_GAP: usize = 1;
+    const PREFIX: usize = ICON_COLS + ICON_GAP; // 3 cols before name text
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(card_inner);
+
+    // Row 0: icon + session name
+    let max_name = content_w.saturating_sub(PREFIX);
+    let name = truncate_str(&session.tmux_session_name, max_name);
+    let name_style = if is_selected {
+        Style::default()
+            .fg(theme::ORANGE_BRIGHT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(theme::SESSION_NAME)
+            .add_modifier(Modifier::BOLD)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(icon, Style::default().fg(state_color)),
+            Span::raw(" "),
+            Span::styled(name, name_style),
+        ])),
+        rows[0],
+    );
+
+    // Row 1: directory (indented to align with name)
+    let dir = shorten_path(&session.directory, content_w.saturating_sub(PREFIX));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(dir, Style::default().fg(theme::GRAY_DIM)),
+        ])),
+        rows[1],
+    );
+
+    // Row 2: command · model
+    let cmd_tag = match &session.model_id {
+        Some(m) => format!("{} · {}", session.claude_command, shorten_model_id(m)),
+        None => session.claude_command.clone(),
+    };
+    let cmd_tag = truncate_str(&cmd_tag, content_w.saturating_sub(PREFIX));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(cmd_tag, Style::default().fg(theme::GRAY_DIM)),
+        ])),
+        rows[2],
+    );
+}
+
+fn draw_ascii_art(frame: &mut Frame, area: Rect) {
+    if area.height < 3 || area.width < 10 {
+        return;
+    }
+
+    const VAN_ART: &[&str] = &[
+        " ██╗   ██╗ █████╗ ███╗   ██╗",
+        " ██║   ██║██╔══██╗████╗  ██║",
+        " ██║   ██║███████║██╔██╗ ██║",
+        " ╚██╗ ██╔╝██╔══██║██║╚██╗██║",
+        "  ╚████╔╝ ██║  ██║██║ ╚████║",
+        "   ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═══╝",
+    ];
+    const DAMME_ART: &[&str] = &[
+        " ██████╗  █████╗ ███╗   ███╗███╗   ███╗███████╗",
+        " ██╔══██╗██╔══██╗████╗ ████║████╗ ████║██╔════╝",
+        " ██║  ██║███████║██╔████╔██║██╔████╔██║█████╗  ",
+        " ██║  ██║██╔══██║██║╚██╔╝██║██║╚██╔╝██║██╔══╝  ",
+        " ██████╔╝██║  ██║██║ ╚═╝ ██║██║ ╚═╝ ██║███████╗",
+        " ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝╚══════╝",
+    ];
+    const TAGLINE: &str = "tmux × claude session manager";
+
+    // VAN(6) + gap(1) + DAMME(6) + gap(1) + tagline(1) = 15 rows
+    let total_h = (VAN_ART.len() + 1 + DAMME_ART.len() + 2) as u16;
+    let start_y = area.y + area.height.saturating_sub(total_h) / 2;
+    let mut y = start_y;
+
+    for line in VAN_ART {
+        if y >= area.y + area.height {
+            break;
+        }
+        frame.render_widget(
+            Paragraph::new(Span::styled(*line, Style::default().fg(theme::ORANGE_BRIGHT)))
+                .alignment(Alignment::Center),
+            Rect::new(area.x, y, area.width, 1),
+        );
+        y += 1;
+    }
+
+    y += 1; // gap between VAN and DAMME
+
+    for line in DAMME_ART {
+        if y >= area.y + area.height {
+            break;
+        }
+        frame.render_widget(
+            Paragraph::new(Span::styled(*line, Style::default().fg(theme::ORANGE)))
+                .alignment(Alignment::Center),
+            Rect::new(area.x, y, area.width, 1),
+        );
+        y += 1;
+    }
+
+    y += 2; // gap before tagline
+
+    if y < area.y + area.height {
+        frame.render_widget(
+            Paragraph::new(Span::styled(TAGLINE, Style::default().fg(theme::GRAY_DIM)))
+                .alignment(Alignment::Center),
+            Rect::new(area.x, y, area.width, 1),
+        );
+    }
+}
+
+/// Replace the home directory prefix with `~`.  Truncates with `…` if still too long.
+fn shorten_path(path: &str, max_len: usize) -> String {
+    if max_len == 0 {
+        return String::new();
+    }
+    let tilde = if let Some(home) = dirs::home_dir() {
+        let h = home.to_string_lossy();
+        if path.starts_with(h.as_ref()) {
+            format!("~{}", &path[h.len()..])
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+    truncate_str(&tilde, max_len)
+}
+
+/// Truncate `s` to at most `max_len` Unicode codepoints, appending `…` if cut.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if max_len == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max_len {
+        return s.to_string();
+    }
+    let t: String = s.chars().take(max_len.saturating_sub(1)).collect();
+    format!("{t}…")
+}
+
+/// Strip the `claude-` prefix from a model ID for compact display.
+fn shorten_model_id(model_id: &str) -> &str {
+    model_id.strip_prefix("claude-").unwrap_or(model_id)
 }
 
 #[cfg(test)]

@@ -198,6 +198,7 @@ fn main() -> Result<()> {
             Event::Tick => match screen {
                 Screen::SessionList => {
                     session_list.refresh_states();
+                    session_list.refresh_preview();
                 }
                 Screen::Launching => {
                     if let Some(ref mut state) = launch_state {

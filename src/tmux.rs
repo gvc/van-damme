@@ -211,6 +211,20 @@ pub fn kill_session(name: &str) -> Result<()> {
     run_tmux(&["kill-session", "-t", name])
 }
 
+/// Capture the visible content of the active pane in a tmux session.
+pub fn capture_pane(session_name: &str) -> Result<String> {
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-p", "-t", session_name])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!(
+            "Failed to capture pane for '{session_name}': {stderr}"
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Extract the base command name from a claude_command string to use as a tmux window name.
 /// e.g. "/usr/bin/claude" -> "claude", "cc" -> "cc", "claude" -> "claude"
 pub fn window_name_from_command(claude_command: &str) -> &str {
