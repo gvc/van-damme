@@ -321,6 +321,28 @@ impl App {
             return Action::None;
         }
 
+        // Ctrl+T toggles between NewTask and NewTmuxSession, preserving title/directory.
+        if key.code == KeyCode::Char('t')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+        {
+            self.form_mode = match self.form_mode {
+                FormMode::NewTask => FormMode::NewTmuxSession,
+                FormMode::NewTmuxSession => FormMode::NewTask,
+            };
+            // Clamp focused field: NewTmuxSession only has Title and Directory.
+            if self.form_mode == FormMode::NewTmuxSession
+                && !matches!(
+                    self.focused_field,
+                    InputField::Title | InputField::Directory
+                )
+            {
+                self.focused_field = InputField::Directory;
+            }
+            return Action::None;
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.quit();
@@ -983,17 +1005,17 @@ impl App {
         let hint_text = if self.show_recent_dirs {
             "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::ModelSelection {
-            "←/→: cycle model  |  Tab: next  |  Ctrl+G: toggle git  |  Enter: submit  |  Esc: quit"
+            "←/→: cycle model  |  Tab: next  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
             if !self.recent_dirs.is_empty() {
-                "Tab/→: complete  |  Ctrl+D: recent dirs  |  Ctrl+G: toggle git  |  Enter: submit  |  Esc: quit"
+                "Tab/→: complete  |  Ctrl+D: recent dirs  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
             } else {
-                "Tab/→: complete  |  Ctrl+G: toggle git  |  Enter: submit  |  Esc: quit"
+                "Tab/→: complete  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
             }
         } else if self.focused_field == InputField::Directory && !self.recent_dirs.is_empty() {
-            "Ctrl+D: recent dirs  |  Ctrl+G: toggle git  |  Enter: submit  |  Esc: quit"
+            "Ctrl+D: recent dirs  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         } else {
-            "Tab: next  |  Ctrl+G: toggle git  |  Enter: submit  |  Esc: quit"
+            "Tab: next  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         };
         let hints = Paragraph::new(Line::from(Span::styled(
             hint_text,
@@ -1196,14 +1218,14 @@ impl App {
             "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
             if !self.recent_dirs.is_empty() {
-                "Tab/→: complete  |  Ctrl+D: recent dirs  |  Enter: submit  |  Esc: back"
+                "Tab/→: complete  |  Ctrl+D: recent dirs  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
             } else {
-                "Tab/→: complete  |  Enter: submit  |  Esc: back"
+                "Tab/→: complete  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
             }
         } else if self.focused_field == InputField::Directory && !self.recent_dirs.is_empty() {
-            "Ctrl+D: recent dirs  |  Enter: submit  |  Esc: back"
+            "Ctrl+D: recent dirs  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
         } else {
-            "Tab: next  |  Enter: submit  |  Esc: back"
+            "Tab: next  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
         };
         let hints = Paragraph::new(Line::from(Span::styled(
             hint_text,
@@ -1412,6 +1434,8 @@ mod tests {
     #[test]
     fn test_submit_with_nonexistent_directory_creates_it() {
         use tempfile::TempDir;
+        // Safety: single-threaded test context; no concurrent env reads.
+        unsafe { std::env::set_var("VAN_DAMME_TEST", "1") };
 
         let tmpdir = TempDir::new().unwrap();
         let nested_path = tmpdir.path().join("new").join("nested").join("dir");
@@ -1966,6 +1990,15 @@ mod tests {
         }
     }
 
+    fn ctrl_t() -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char('t'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
     #[test]
     fn test_ctrl_g_toggles_git_mode_from_any_field() {
         let mut app = App::new();
@@ -2122,6 +2155,61 @@ mod tests {
         // Ctrl+G should not crash and form_mode unchanged
         app.handle_key(ctrl_g());
         assert_eq!(app.form_mode, FormMode::NewTmuxSession);
+    }
+
+    #[test]
+    fn test_ctrl_t_toggles_from_new_task_to_tmux() {
+        let mut app = App::new();
+        assert_eq!(app.form_mode, FormMode::NewTask);
+        app.handle_key(ctrl_t());
+        assert_eq!(app.form_mode, FormMode::NewTmuxSession);
+    }
+
+    #[test]
+    fn test_ctrl_t_toggles_back_to_new_task() {
+        let mut app = tmux_app();
+        assert_eq!(app.form_mode, FormMode::NewTmuxSession);
+        app.handle_key(ctrl_t());
+        assert_eq!(app.form_mode, FormMode::NewTask);
+    }
+
+    #[test]
+    fn test_ctrl_t_preserves_title_and_directory() {
+        let mut app = App::new();
+        for ch in "my task".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        while !app.dir_input.value().is_empty() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        for ch in "/home/user".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(ctrl_t());
+        assert_eq!(app.form_mode, FormMode::NewTmuxSession);
+        assert_eq!(app.title_input.value(), "my task");
+        assert_eq!(app.dir_input.value(), "/home/user");
+    }
+
+    #[test]
+    fn test_ctrl_t_clamps_focused_field_to_directory_when_on_prompt() {
+        let mut app = App::new();
+        // Navigate to Prompt field
+        app.focused_field = InputField::Prompt;
+        app.handle_key(ctrl_t());
+        assert_eq!(app.form_mode, FormMode::NewTmuxSession);
+        // Prompt doesn't exist in tmux mode — should clamp to Directory
+        assert_eq!(app.focused_field, InputField::Directory);
+    }
+
+    #[test]
+    fn test_ctrl_t_preserves_title_field_when_switching() {
+        let mut app = App::new();
+        // Title field is valid in both modes — should stay
+        assert_eq!(app.focused_field, InputField::Title);
+        app.handle_key(ctrl_t());
+        assert_eq!(app.focused_field, InputField::Title);
     }
 
     // --- ModelSelection tests ---
