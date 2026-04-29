@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -25,9 +25,8 @@ pub enum SessionListAction {
 /// A row in the display list — either a group header or a selectable session.
 #[derive(Debug, Clone)]
 enum DisplayRow {
-    /// Non-selectable directory group header. String value used in tests.
-    #[allow(dead_code)]
-    GroupHeader(String),
+    /// Non-selectable directory group header. Empty dir = blank separator.
+    GroupHeader { dir: String, collapsed: bool },
     /// Selectable session row. Stores index into `self.sessions`.
     Session(usize),
 }
@@ -41,17 +40,20 @@ pub struct SessionList {
     pub status_message: Option<String>,
     /// When set, we're waiting for the user to confirm killing the session at this index.
     confirm_kill: Option<usize>,
-    /// Top card index for the scrollable card list.
+    /// Top display-row index for the scrollable list.
     card_scroll_offset: usize,
     /// Cached tmux pane content for the selected session.
     preview_content: Option<String>,
     /// Cached tmux session summary (windows/panes/programs) for the selected session.
     preview_summary: Option<tmux::SessionSummary>,
+    /// Directories whose session cards are hidden.
+    collapsed_dirs: HashSet<String>,
 }
 
 impl SessionList {
     pub fn new(sessions: Vec<SessionRecord>) -> Self {
-        let display_rows = Self::build_display_rows(&sessions);
+        let collapsed_dirs = HashSet::new();
+        let display_rows = Self::build_display_rows(&sessions, &collapsed_dirs);
         let mut list_state = ListState::default();
         // Select first selectable row (skip headers)
         let first_selectable = display_rows
@@ -67,12 +69,16 @@ impl SessionList {
             card_scroll_offset: 0,
             preview_content: None,
             preview_summary: None,
+            collapsed_dirs,
         }
     }
 
     /// Build display rows: group sessions by directory, sorted alphabetically.
-    /// Within each group, sessions appear in their original order (creation time).
-    fn build_display_rows(sessions: &[SessionRecord]) -> Vec<DisplayRow> {
+    /// Sessions in collapsed directories are omitted from output.
+    fn build_display_rows(
+        sessions: &[SessionRecord],
+        collapsed: &HashSet<String>,
+    ) -> Vec<DisplayRow> {
         if sessions.is_empty() {
             return vec![];
         }
@@ -86,19 +92,27 @@ impl SessionList {
         let mut rows = Vec::new();
         for (dir, indices) in &groups {
             if !rows.is_empty() {
-                // Blank separator rendered as an empty non-selectable header
-                rows.push(DisplayRow::GroupHeader(String::new()));
+                rows.push(DisplayRow::GroupHeader {
+                    dir: String::new(),
+                    collapsed: false,
+                });
             }
-            rows.push(DisplayRow::GroupHeader(dir.to_string()));
-            for &idx in indices {
-                rows.push(DisplayRow::Session(idx));
+            let is_collapsed = collapsed.contains(*dir);
+            rows.push(DisplayRow::GroupHeader {
+                dir: dir.to_string(),
+                collapsed: is_collapsed,
+            });
+            if !is_collapsed {
+                for &idx in indices {
+                    rows.push(DisplayRow::Session(idx));
+                }
             }
         }
         rows
     }
 
     fn rebuild_display_rows(&mut self) {
-        self.display_rows = Self::build_display_rows(&self.sessions);
+        self.display_rows = Self::build_display_rows(&self.sessions, &self.collapsed_dirs);
     }
 
     /// Map the currently selected display row to a session index, if it's a session row.
@@ -110,7 +124,7 @@ impl SessionList {
         }
     }
 
-    /// Find selectable row indices.
+    /// Find selectable (Session) row indices.
     fn selectable_indices(&self) -> Vec<usize> {
         self.display_rows
             .iter()
@@ -223,6 +237,10 @@ impl SessionList {
                 self.request_kill_selected();
                 SessionListAction::None
             }
+            KeyCode::Char('z') => {
+                self.toggle_collapse_selected();
+                SessionListAction::None
+            }
             _ => SessionListAction::None,
         }
     }
@@ -235,7 +253,6 @@ impl SessionList {
         let current = self.list_state.selected();
         let next = match current {
             Some(i) => {
-                // Find current position in selectable list, move to previous (wrapping)
                 let pos = selectable.iter().position(|&s| s == i).unwrap_or(0);
                 if pos == 0 {
                     *selectable.last().unwrap()
@@ -303,6 +320,33 @@ impl SessionList {
         self.refresh();
     }
 
+    /// Toggle collapse for the directory group containing the current selection.
+    fn toggle_collapse_selected(&mut self) {
+        let Some(selected_row) = self.list_state.selected() else {
+            return;
+        };
+
+        // Walk backwards from current (or selected) row to find nearest non-empty GroupHeader.
+        let group_dir = self.display_rows[..=selected_row]
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                DisplayRow::GroupHeader { dir, .. } if !dir.is_empty() => Some(dir.clone()),
+                _ => None,
+            });
+
+        let Some(dir) = group_dir else { return };
+
+        if self.collapsed_dirs.contains(&dir) {
+            self.collapsed_dirs.remove(&dir);
+        } else {
+            self.collapsed_dirs.insert(dir);
+        }
+
+        self.rebuild_display_rows();
+        self.clamp_selection();
+    }
+
     /// Refresh the cached tmux pane preview and session summary for the currently selected session.
     /// Call this on tick rather than on every render to avoid subprocess overhead.
     pub fn refresh_preview(&mut self) {
@@ -359,8 +403,6 @@ impl SessionList {
     }
 
     fn draw_session_panel(&mut self, frame: &mut Frame, area: Rect) {
-        let selected_session_idx = self.selected_session_index();
-
         let outer_block = Block::default()
             .title(" ACTIVE SESSIONS ")
             .title_style(
@@ -400,33 +442,97 @@ impl SessionList {
             }
         } else {
             const CARD_HEIGHT: u16 = 5;
-            let visible_count = (cards_area.height / CARD_HEIGHT) as usize;
 
-            // Auto-scroll to keep selected card visible.
-            if let Some(sel_idx) = selected_session_idx {
-                if sel_idx < self.card_scroll_offset {
-                    self.card_scroll_offset = sel_idx;
-                } else if visible_count > 0 && sel_idx >= self.card_scroll_offset + visible_count {
-                    self.card_scroll_offset = sel_idx.saturating_sub(visible_count - 1);
+            // selected_display_row is the display_rows index of the selected row.
+            let selected_display_row = self.list_state.selected();
+
+            // Auto-scroll: keep selected display row visible.
+            if let Some(sel_row) = selected_display_row {
+                // Compute the y-offset of sel_row relative to scroll offset 0.
+                let row_y = self.display_row_y(sel_row, CARD_HEIGHT);
+                let scroll_y = self.display_row_y(self.card_scroll_offset, CARD_HEIGHT);
+                let visible_height = cards_area.height as usize;
+
+                let sel_top = row_y.saturating_sub(scroll_y);
+                let sel_bottom = sel_top + CARD_HEIGHT as usize;
+
+                if sel_top < scroll_y {
+                    // Selected is above visible area — scroll up.
+                    self.card_scroll_offset = sel_row;
+                } else if sel_bottom > visible_height {
+                    // Selected is below visible area — scroll down.
+                    // Find the first display row such that sel_row fits in view.
+                    let mut offset = self.card_scroll_offset;
+                    loop {
+                        let top = self.display_row_y(offset, CARD_HEIGHT);
+                        let bottom =
+                            self.display_row_y(sel_row, CARD_HEIGHT) + CARD_HEIGHT as usize - top;
+                        if bottom <= visible_height || offset >= sel_row {
+                            break;
+                        }
+                        offset += 1;
+                    }
+                    self.card_scroll_offset = offset;
                 }
             }
 
-            let scroll = self.card_scroll_offset;
             let mut y = cards_area.y;
-            for (i, session) in self.sessions.iter().enumerate().skip(scroll) {
-                if y + CARD_HEIGHT > cards_area.y + cards_area.height {
+            let selected_session_idx = self.selected_session_index();
+
+            for (row_idx, row) in self.display_rows.iter().enumerate() {
+                if row_idx < self.card_scroll_offset {
+                    continue;
+                }
+                if y >= cards_area.y + cards_area.height {
                     break;
                 }
-                let card_area = Rect::new(cards_area.x, y, cards_area.width, CARD_HEIGHT);
-                draw_session_card(frame, card_area, session, selected_session_idx == Some(i));
-                y += CARD_HEIGHT;
+
+                match row {
+                    DisplayRow::GroupHeader { dir, collapsed } if dir.is_empty() => {
+                        // Blank separator: 1 row
+                        if y < cards_area.y + cards_area.height {
+                            y += 1;
+                        }
+                    }
+                    DisplayRow::GroupHeader { dir, collapsed } => {
+                        // Directory header: 1 row
+                        let arrow = if *collapsed { "▶ " } else { "▼ " };
+                        let short_dir =
+                            shorten_path(dir, (cards_area.width as usize).saturating_sub(3));
+                        let header_text = format!("{arrow}{short_dir}");
+                        frame.render_widget(
+                            Paragraph::new(Line::from(vec![Span::styled(
+                                header_text,
+                                Style::default()
+                                    .fg(theme::CYAN)
+                                    .add_modifier(Modifier::BOLD),
+                            )])),
+                            Rect::new(cards_area.x + 1, y, cards_area.width.saturating_sub(2), 1),
+                        );
+                        y += 1;
+                    }
+                    DisplayRow::Session(session_idx) => {
+                        if y + CARD_HEIGHT > cards_area.y + cards_area.height {
+                            break;
+                        }
+                        let card_area = Rect::new(cards_area.x, y, cards_area.width, CARD_HEIGHT);
+                        let session = &self.sessions[*session_idx];
+                        draw_session_card(
+                            frame,
+                            card_area,
+                            session,
+                            selected_session_idx == Some(*session_idx),
+                        );
+                        y += CARD_HEIGHT;
+                    }
+                }
             }
         }
 
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "j/k:navigate · a:attach · x:kill",
+                    "j/k:navigate · a:attach · x:kill · z:collapse",
                     Style::default().fg(theme::GRAY_DIM),
                 )),
                 Line::from(Span::styled(
@@ -437,6 +543,21 @@ impl SessionList {
             .alignment(Alignment::Center),
             hints_area,
         );
+    }
+
+    /// Compute the pixel-row offset of a display row from the top (ignoring scroll).
+    fn display_row_y(&self, row_idx: usize, card_height: u16) -> usize {
+        let mut y = 0usize;
+        for (i, row) in self.display_rows.iter().enumerate() {
+            if i >= row_idx {
+                break;
+            }
+            match row {
+                DisplayRow::Session(_) => y += card_height as usize,
+                DisplayRow::GroupHeader { .. } => y += 1,
+            }
+        }
+        y
     }
 
     fn draw_preview_panel(&self, frame: &mut Frame, area: Rect) {
@@ -832,11 +953,17 @@ mod tests {
         let list = SessionList::new(sample_grouped_sessions());
         // Expected: Header, Session, Session, Separator, Header, Session
         assert_eq!(list.display_rows.len(), 6);
-        assert!(matches!(list.display_rows[0], DisplayRow::GroupHeader(ref d) if d == "/proj/a"));
+        assert!(
+            matches!(&list.display_rows[0], DisplayRow::GroupHeader { dir, collapsed: false } if dir == "/proj/a")
+        );
         assert!(matches!(list.display_rows[1], DisplayRow::Session(0)));
         assert!(matches!(list.display_rows[2], DisplayRow::Session(1)));
-        assert!(matches!(list.display_rows[3], DisplayRow::GroupHeader(ref d) if d.is_empty()));
-        assert!(matches!(list.display_rows[4], DisplayRow::GroupHeader(ref d) if d == "/proj/b"));
+        assert!(
+            matches!(&list.display_rows[3], DisplayRow::GroupHeader { dir, collapsed: false } if dir.is_empty())
+        );
+        assert!(
+            matches!(&list.display_rows[4], DisplayRow::GroupHeader { dir, collapsed: false } if dir == "/proj/b")
+        );
         assert!(matches!(list.display_rows[5], DisplayRow::Session(2)));
     }
 
@@ -1058,7 +1185,9 @@ mod tests {
         let list = SessionList::new(sessions);
         // Header + 2 sessions, no separators
         assert_eq!(list.display_rows.len(), 3);
-        assert!(matches!(list.display_rows[0], DisplayRow::GroupHeader(ref d) if d == "/same"));
+        assert!(
+            matches!(&list.display_rows[0], DisplayRow::GroupHeader { dir, collapsed: false } if dir == "/same")
+        );
         assert!(matches!(list.display_rows[1], DisplayRow::Session(0)));
         assert!(matches!(list.display_rows[2], DisplayRow::Session(1)));
     }
@@ -1114,5 +1243,77 @@ mod tests {
             None => format!("[{}]", session.claude_command),
         };
         assert_eq!(tag, "[claude | claude-sonnet-4-6]");
+    }
+
+    // --- Collapse tests ---
+
+    #[test]
+    fn test_collapse_hides_sessions() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Start at alpha (row 1), press z to collapse /proj/a
+        list.handle_key(key(KeyCode::Char('z')));
+
+        // /proj/a collapsed: display rows = Header(/proj/a, collapsed), Separator, Header(/proj/b), Session(2)
+        assert_eq!(list.display_rows.len(), 4);
+        assert!(
+            matches!(&list.display_rows[0], DisplayRow::GroupHeader { dir, collapsed: true } if dir == "/proj/a")
+        );
+        assert!(
+            matches!(&list.display_rows[1], DisplayRow::GroupHeader { dir, collapsed: false } if dir.is_empty())
+        );
+        assert!(
+            matches!(&list.display_rows[2], DisplayRow::GroupHeader { dir, collapsed: false } if dir == "/proj/b")
+        );
+        assert!(matches!(list.display_rows[3], DisplayRow::Session(2)));
+    }
+
+    #[test]
+    fn test_collapse_moves_selection_to_next_visible() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Start at alpha (row 1), collapse /proj/a
+        list.handle_key(key(KeyCode::Char('z')));
+        // Selection should now be on gamma (only visible session)
+        assert!(matches!(
+            list.display_rows[list.list_state.selected().unwrap()],
+            DisplayRow::Session(2)
+        ));
+    }
+
+    #[test]
+    fn test_expand_restores_sessions() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Collapse /proj/a
+        list.handle_key(key(KeyCode::Char('z')));
+        // Navigate to /proj/a header (now row 0)
+        list.list_state.select(Some(0));
+        // Expand
+        list.handle_key(key(KeyCode::Char('z')));
+
+        // Should be back to 6 rows
+        assert_eq!(list.display_rows.len(), 6);
+        assert!(matches!(
+            &list.display_rows[0],
+            DisplayRow::GroupHeader {
+                collapsed: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_collapse_from_session_finds_group() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Navigate to beta (row 2) then collapse — should collapse /proj/a
+        list.handle_key(key(KeyCode::Down)); // beta
+        list.handle_key(key(KeyCode::Char('z')));
+        assert!(list.collapsed_dirs.contains("/proj/a"));
+    }
+
+    #[test]
+    fn test_z_on_empty_is_noop() {
+        let mut list = SessionList::new(vec![]);
+        let action = list.handle_key(key(KeyCode::Char('z')));
+        assert_eq!(action, SessionListAction::None);
+        assert!(list.collapsed_dirs.is_empty());
     }
 }
