@@ -6,6 +6,16 @@ pub struct TmuxSession {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionSummary {
+    pub window_count: usize,
+    pub pane_count: usize,
+    /// Non-shell programs running in panes (deduped, sorted).
+    pub programs: Vec<String>,
+}
+
+const SHELL_NAMES: &[&str] = &["zsh", "bash", "sh", "fish", "dash", "tcsh", "csh"];
+
 /// Sanitize a task title into a valid tmux session name.
 /// Lowercases, replaces whitespace runs with hyphens, strips non-alphanumeric/non-hyphen chars,
 /// and trims leading/trailing hyphens.
@@ -225,6 +235,57 @@ pub fn capture_pane(session_name: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Return a summary of windows, panes, and running programs for a tmux session.
+pub fn session_summary(session_name: &str) -> Result<SessionSummary> {
+    let output = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-s",
+            "-t",
+            session_name,
+            "-F",
+            "#{window_index}:#{pane_current_command}",
+        ])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("Failed to list panes for '{session_name}': {stderr}"));
+    }
+    Ok(parse_summary(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Parse `tmux list-panes -F '#{window_index}:#{pane_current_command}'` output.
+pub fn parse_summary(stdout: &str) -> SessionSummary {
+    use std::collections::HashSet;
+
+    let mut window_indices: HashSet<&str> = HashSet::new();
+    let mut pane_count = 0usize;
+    let mut program_set: HashSet<String> = HashSet::new();
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        pane_count += 1;
+        if let Some((win_idx, cmd)) = line.split_once(':') {
+            window_indices.insert(win_idx);
+            if !SHELL_NAMES.contains(&cmd) && !cmd.is_empty() {
+                program_set.insert(cmd.to_string());
+            }
+        }
+    }
+
+    let mut programs: Vec<String> = program_set.into_iter().collect();
+    programs.sort();
+
+    SessionSummary {
+        window_count: window_indices.len(),
+        pane_count,
+        programs,
+    }
+}
+
 /// Extract the base command name from a claude_command string to use as a tmux window name.
 /// e.g. "/usr/bin/claude" -> "claude", "cc" -> "cc", "claude" -> "claude"
 pub fn window_name_from_command(claude_command: &str) -> &str {
@@ -284,6 +345,47 @@ fn run_tmux(args: &[&str]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_summary_counts_windows_and_panes() {
+        let input = "0:claude\n0:zsh\n1:nvim\n1:zsh\n";
+        let s = parse_summary(input);
+        assert_eq!(s.window_count, 2);
+        assert_eq!(s.pane_count, 4);
+        assert_eq!(s.programs, vec!["claude", "nvim"]);
+    }
+
+    #[test]
+    fn test_parse_summary_filters_shells() {
+        let input = "0:zsh\n0:bash\n0:fish\n";
+        let s = parse_summary(input);
+        assert_eq!(s.pane_count, 3);
+        assert!(s.programs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_summary_dedupes_programs() {
+        let input = "0:claude\n1:claude\n2:claude\n";
+        let s = parse_summary(input);
+        assert_eq!(s.programs, vec!["claude"]);
+    }
+
+    #[test]
+    fn test_parse_summary_empty() {
+        let s = parse_summary("");
+        assert_eq!(s.window_count, 0);
+        assert_eq!(s.pane_count, 0);
+        assert!(s.programs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_summary_single_pane() {
+        let input = "0:claude\n";
+        let s = parse_summary(input);
+        assert_eq!(s.window_count, 1);
+        assert_eq!(s.pane_count, 1);
+        assert_eq!(s.programs, vec!["claude"]);
+    }
 
     #[test]
     fn test_sanitize_basic() {

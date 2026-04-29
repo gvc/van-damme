@@ -45,6 +45,8 @@ pub struct SessionList {
     card_scroll_offset: usize,
     /// Cached tmux pane content for the selected session.
     preview_content: Option<String>,
+    /// Cached tmux session summary (windows/panes/programs) for the selected session.
+    preview_summary: Option<tmux::SessionSummary>,
 }
 
 impl SessionList {
@@ -64,6 +66,7 @@ impl SessionList {
             confirm_kill: None,
             card_scroll_offset: 0,
             preview_content: None,
+            preview_summary: None,
         }
     }
 
@@ -300,24 +303,23 @@ impl SessionList {
         self.refresh();
     }
 
-    /// Refresh the cached tmux pane preview for the currently selected session.
+    /// Refresh the cached tmux pane preview and session summary for the currently selected session.
     /// Call this on tick rather than on every render to avoid subprocess overhead.
     pub fn refresh_preview(&mut self) {
         if let Some(idx) = self.selected_session_index() {
             let session_name = self.sessions[idx].tmux_session_name.clone();
             self.preview_content = tmux::capture_pane(&session_name).ok();
+            self.preview_summary = tmux::session_summary(&session_name).ok();
         } else {
             self.preview_content = None;
+            self.preview_summary = None;
         }
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
-        frame.render_widget(
-            Block::default().style(Style::default().bg(theme::BG)),
-            area,
-        );
+        frame.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
 
         const LEFT_WIDTH: u16 = 54;
         let chunks = Layout::horizontal([
@@ -458,30 +460,65 @@ impl SessionList {
         let inner = outer_block.inner(area);
         frame.render_widget(outer_block, area);
 
+        // Split inner: summary header (2 rows) + pane capture below.
+        let has_summary = self.preview_summary.is_some();
+        let header_height: u16 = if has_summary && inner.height >= 4 {
+            2
+        } else {
+            0
+        };
+        let chunks =
+            Layout::vertical([Constraint::Length(header_height), Constraint::Min(0)]).split(inner);
+
+        if let Some(ref summary) = self.preview_summary
+            && header_height > 0
+        {
+            {
+                let programs_str = if summary.programs.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", summary.programs.join(", "))
+                };
+                let summary_line = format!(
+                    " {}w · {}p{}",
+                    summary.window_count, summary.pane_count, programs_str
+                );
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(Span::styled(
+                            truncate_str(&summary_line, inner.width as usize),
+                            Style::default().fg(theme::CYAN),
+                        )),
+                        Line::from(Span::styled(
+                            "─".repeat(inner.width as usize),
+                            Style::default().fg(theme::BLUE),
+                        )),
+                    ]),
+                    chunks[0],
+                );
+            }
+        }
+
+        let content_area = chunks[1];
         if let Some(ref content) = self.preview_content {
             let lines: Vec<Line> = content
                 .lines()
                 .map(|l| Line::raw(l.trim_end().to_string()))
                 .collect();
-            let visible_height = inner.height as usize;
+            let visible_height = content_area.height as usize;
             let skip = lines.len().saturating_sub(visible_height);
             let visible: Vec<Line> = lines.into_iter().skip(skip).collect();
             frame.render_widget(
                 Paragraph::new(visible).style(Style::default().fg(theme::TEXT)),
-                inner,
+                content_area,
             );
         } else {
-            draw_ascii_art(frame, inner);
+            draw_ascii_art(frame, content_area);
         }
     }
 }
 
-fn draw_session_card(
-    frame: &mut Frame,
-    area: Rect,
-    session: &SessionRecord,
-    is_selected: bool,
-) {
+fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_selected: bool) {
     let (icon, state_color) = if session.claude_session_id.is_none() {
         // Plain tmux session — use a neutral indicator
         ("🖥", theme::GRAY_DIM)
@@ -603,8 +640,11 @@ fn draw_ascii_art(frame: &mut Frame, area: Rect) {
             break;
         }
         frame.render_widget(
-            Paragraph::new(Span::styled(*line, Style::default().fg(theme::ORANGE_BRIGHT)))
-                .alignment(Alignment::Center),
+            Paragraph::new(Span::styled(
+                *line,
+                Style::default().fg(theme::ORANGE_BRIGHT),
+            ))
+            .alignment(Alignment::Center),
             Rect::new(area.x, y, area.width, 1),
         );
         y += 1;
