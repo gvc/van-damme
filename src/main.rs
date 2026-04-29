@@ -17,7 +17,7 @@ use color_eyre::Result;
 use ratatui::layout::{Constraint, Flex, Layout};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use app::{Action, App};
 use event::{Event, EventHandler};
@@ -97,8 +97,11 @@ fn main() -> Result<()> {
                 Block::default().style(Style::default().bg(theme::BG)),
                 frame.area(),
             );
+            // Always draw session list as the base layer
+            session_list.draw(frame);
+            // Overlay new task form or launching spinner on top
             match screen {
-                Screen::SessionList => session_list.draw(frame),
+                Screen::SessionList => {}
                 Screen::NewTask => app.draw(frame),
                 Screen::Launching => {
                     if let Some(ref state) = launch_state {
@@ -274,6 +277,7 @@ fn draw_launching(frame: &mut ratatui::Frame, state: &LaunchState) {
         .flex(Flex::Center)
         .areas(vert_area);
 
+    frame.render_widget(Clear, centered);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::ORANGE))

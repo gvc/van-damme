@@ -319,7 +319,7 @@ impl SessionList {
             area,
         );
 
-        const LEFT_WIDTH: u16 = 36;
+        const LEFT_WIDTH: u16 = 54;
         let chunks = Layout::horizontal([
             Constraint::Length(LEFT_WIDTH.min(area.width)),
             Constraint::Min(0),
