@@ -759,11 +759,11 @@ impl App {
         let form_area = outer_chunks[0];
         let error_area = outer_chunks[1];
 
-        // Clear area behind form and fill with background
-        frame.render_widget(Clear, form_area);
+        // Clear area behind form (including error line) and fill with background
+        frame.render_widget(Clear, outer_area);
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::BG)),
-            form_area,
+            outer_area,
         );
 
         let outer_block = Block::default()
@@ -1137,10 +1137,10 @@ impl App {
         let form_area = outer_chunks[0];
         let error_area = outer_chunks[1];
 
-        frame.render_widget(Clear, form_area);
+        frame.render_widget(Clear, outer_area);
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::BG)),
-            form_area,
+            outer_area,
         );
 
         let outer_block = Block::default()
