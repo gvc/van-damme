@@ -71,7 +71,11 @@ fn load_db_from(path: &Path) -> Result<SessionDb> {
         return Ok(SessionDb::default());
     }
     let contents = fs::read_to_string(path)?;
-    let db: SessionDb = serde_json::from_str(&contents)?;
+    let mut db: SessionDb = serde_json::from_str(&contents)?;
+    for s in &mut db.sessions {
+        let t = s.directory.trim_end_matches('/');
+        s.directory = if t.is_empty() { "/".to_string() } else { t.to_string() };
+    }
     Ok(db)
 }
 
@@ -217,6 +221,11 @@ fn add_session_to(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
+
+    let directory = {
+        let t = directory.trim_end_matches('/');
+        if t.is_empty() { "/".to_string() } else { t.to_string() }
+    };
 
     let record = SessionRecord {
         tmux_session_id,
@@ -600,5 +609,55 @@ mod tests {
         .unwrap();
 
         assert_eq!(record.model_id, None);
+    }
+
+    #[test]
+    fn test_add_session_strips_trailing_slash() {
+        let (_tmp, path) = temp_db_path();
+        let record = add_session_to(
+            &path,
+            "$1".to_string(),
+            "slash-session".to_string(),
+            None,
+            "/home/user/code/nous/".to_string(),
+            "claude".to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(record.directory, "/home/user/code/nous");
+    }
+
+    #[test]
+    fn test_load_db_normalizes_existing_trailing_slash() {
+        let (_tmp, path) = temp_db_path();
+        let json = r#"{"sessions":[{
+            "tmux_session_id": "$1",
+            "tmux_session_name": "nous",
+            "claude_session_id": null,
+            "directory": "/home/user/code/nous/",
+            "created_at": 100,
+            "state": "Idle",
+            "claude_command": "claude"
+        }]}"#;
+        fs::write(&path, json).unwrap();
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions[0].directory, "/home/user/code/nous");
+    }
+
+    #[test]
+    fn test_load_db_preserves_root_slash() {
+        let (_tmp, path) = temp_db_path();
+        let json = r#"{"sessions":[{
+            "tmux_session_id": "$1",
+            "tmux_session_name": "root",
+            "claude_session_id": null,
+            "directory": "/",
+            "created_at": 100,
+            "state": "Idle",
+            "claude_command": "claude"
+        }]}"#;
+        fs::write(&path, json).unwrap();
+        let sessions = list_sessions_from(&path).unwrap();
+        assert_eq!(sessions[0].directory, "/");
     }
 }
