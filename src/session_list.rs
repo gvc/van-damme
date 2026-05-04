@@ -269,6 +269,10 @@ impl SessionList {
                 self.toggle_collapse_selected();
                 SessionListAction::None
             }
+            KeyCode::Char('Z') => {
+                self.toggle_collapse_all();
+                SessionListAction::None
+            }
             _ => SessionListAction::None,
         }
     }
@@ -374,6 +378,27 @@ impl SessionList {
             self.collapsed_dirs.insert(dir);
         }
 
+        self.rebuild_display_rows();
+        self.clamp_selection();
+    }
+
+    /// Collapse all groups if any are expanded; expand all if all are collapsed.
+    fn toggle_collapse_all(&mut self) {
+        let all_dirs: Vec<String> = {
+            let mut seen = std::collections::BTreeMap::new();
+            for s in &self.sessions {
+                seen.insert(s.directory.clone(), ());
+            }
+            seen.into_keys().collect()
+        };
+        if all_dirs.is_empty() {
+            return;
+        }
+        if all_dirs.iter().all(|d| self.collapsed_dirs.contains(d)) {
+            self.collapsed_dirs.clear();
+        } else {
+            self.collapsed_dirs = all_dirs.into_iter().collect();
+        }
         self.rebuild_display_rows();
         self.clamp_selection();
     }
@@ -571,7 +596,7 @@ impl SessionList {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "j/k:navigate · a:attach · x:kill · z:collapse",
+                    "j/k:navigate · a:attach · x:kill · z:collapse · Z:all",
                     Style::default().fg(theme::GRAY_DIM),
                 )),
                 Line::from(Span::styled(
@@ -1391,6 +1416,65 @@ mod tests {
             .iter()
             .any(|r| matches!(r, DisplayRow::Session(_)));
         assert!(has_session);
+    }
+
+    fn key_shift(code: KeyCode) -> KeyEvent {
+        use crossterm::event::KeyModifiers;
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::SHIFT,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn test_Z_collapses_all() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key_shift(KeyCode::Char('Z')));
+        // All dirs should be collapsed
+        assert!(list.collapsed_dirs.contains("/proj/a"));
+        assert!(list.collapsed_dirs.contains("/proj/b"));
+        let has_session = list
+            .display_rows
+            .iter()
+            .any(|r| matches!(r, DisplayRow::Session(_)));
+        assert!(!has_session);
+    }
+
+    #[test]
+    fn test_Z_expands_all_when_all_collapsed() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Collapse all first
+        list.handle_key(key_shift(KeyCode::Char('Z')));
+        assert_eq!(list.collapsed_dirs.len(), 2);
+        // Z again should expand all
+        list.handle_key(key_shift(KeyCode::Char('Z')));
+        assert!(list.collapsed_dirs.is_empty());
+        let has_session = list
+            .display_rows
+            .iter()
+            .any(|r| matches!(r, DisplayRow::Session(_)));
+        assert!(has_session);
+    }
+
+    #[test]
+    fn test_Z_collapses_all_when_partially_collapsed() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Collapse only /proj/a
+        list.handle_key(key(KeyCode::Char('z')));
+        assert_eq!(list.collapsed_dirs.len(), 1);
+        // Z should collapse all (not expand)
+        list.handle_key(key_shift(KeyCode::Char('Z')));
+        assert_eq!(list.collapsed_dirs.len(), 2);
+    }
+
+    #[test]
+    fn test_Z_on_empty_is_noop() {
+        let mut list = SessionList::new(vec![]);
+        let action = list.handle_key(key_shift(KeyCode::Char('Z')));
+        assert_eq!(action, SessionListAction::None);
+        assert!(list.collapsed_dirs.is_empty());
     }
 
     #[test]
