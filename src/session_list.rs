@@ -115,6 +115,15 @@ impl SessionList {
         self.display_rows = Self::build_display_rows(&self.sessions, &self.collapsed_dirs);
     }
 
+    /// If the selected row is a non-empty GroupHeader, return its directory.
+    fn selected_header_dir(&self) -> Option<&str> {
+        let row_idx = self.list_state.selected()?;
+        match self.display_rows.get(row_idx) {
+            Some(DisplayRow::GroupHeader { dir, .. }) if !dir.is_empty() => Some(dir.as_str()),
+            _ => None,
+        }
+    }
+
     /// Map the currently selected display row to a session index, if it's a session row.
     fn selected_session_index(&self) -> Option<usize> {
         let row_idx = self.list_state.selected()?;
@@ -518,16 +527,24 @@ impl SessionList {
                     }
                     DisplayRow::GroupHeader { dir, collapsed } => {
                         // Directory header: 1 row
+                        let is_selected = self.list_state.selected() == Some(row_idx);
                         let arrow = if *collapsed { "▶ " } else { "▼ " };
                         let short_dir =
                             shorten_path(dir, (cards_area.width as usize).saturating_sub(3));
                         let header_text = format!("{arrow}{short_dir}");
+                        let header_style = if is_selected {
+                            Style::default()
+                                .fg(theme::ORANGE_BRIGHT)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(theme::CYAN)
+                                .add_modifier(Modifier::BOLD)
+                        };
                         frame.render_widget(
                             Paragraph::new(Line::from(vec![Span::styled(
                                 header_text,
-                                Style::default()
-                                    .fg(theme::CYAN)
-                                    .add_modifier(Modifier::BOLD),
+                                header_style,
                             )])),
                             Rect::new(cards_area.x + 1, y, cards_area.width.saturating_sub(2), 1),
                         );
@@ -591,7 +608,13 @@ impl SessionList {
 
         let (title, border_fg) = match selected {
             Some(s) => (format!(" {} ", s.tmux_session_name), theme::ORANGE),
-            None => (" no session selected ".to_string(), theme::BLUE),
+            None => match self.selected_header_dir() {
+                Some(dir) => (
+                    format!(" {} ", shorten_path(dir, 40)),
+                    theme::CYAN,
+                ),
+                None => (" no session selected ".to_string(), theme::BLUE),
+            },
         };
 
         let outer_block = Block::default()
