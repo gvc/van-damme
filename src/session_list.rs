@@ -115,6 +115,15 @@ impl SessionList {
         self.display_rows = Self::build_display_rows(&self.sessions, &self.collapsed_dirs);
     }
 
+    /// If the selected row is a non-empty GroupHeader, return its directory.
+    fn selected_header_dir(&self) -> Option<&str> {
+        let row_idx = self.list_state.selected()?;
+        match self.display_rows.get(row_idx) {
+            Some(DisplayRow::GroupHeader { dir, .. }) if !dir.is_empty() => Some(dir.as_str()),
+            _ => None,
+        }
+    }
+
     /// Map the currently selected display row to a session index, if it's a session row.
     fn selected_session_index(&self) -> Option<usize> {
         let row_idx = self.list_state.selected()?;
@@ -124,13 +133,26 @@ impl SessionList {
         }
     }
 
-    /// Find selectable (Session) row indices.
+    /// Find selectable (Session) row indices, or non-empty GroupHeader indices if no sessions visible.
     fn selectable_indices(&self) -> Vec<usize> {
-        self.display_rows
+        let sessions: Vec<usize> = self
+            .display_rows
             .iter()
             .enumerate()
             .filter_map(|(i, r)| match r {
                 DisplayRow::Session(_) => Some(i),
+                _ => None,
+            })
+            .collect();
+        if !sessions.is_empty() {
+            return sessions;
+        }
+        // All groups collapsed — navigate between non-empty headers so z can expand them.
+        self.display_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match r {
+                DisplayRow::GroupHeader { dir, .. } if !dir.is_empty() => Some(i),
                 _ => None,
             })
             .collect()
@@ -196,13 +218,19 @@ impl SessionList {
 
     fn clamp_selection(&mut self) {
         let selectable = self.selectable_indices();
-        if selectable.is_empty() {
-            self.list_state.select(None);
-        } else if self.list_state.selected().is_none()
-            || !selectable.contains(&self.list_state.selected().unwrap())
-        {
-            self.list_state.select(Some(selectable[0]));
+        if !selectable.is_empty() {
+            if self.list_state.selected().is_none()
+                || !selectable.contains(&self.list_state.selected().unwrap())
+            {
+                self.list_state.select(Some(selectable[0]));
+            }
+            return;
         }
+        // No sessions visible — select first non-empty group header so z can expand it.
+        let first_header = self.display_rows.iter().position(|r| {
+            matches!(r, DisplayRow::GroupHeader { dir, .. } if !dir.is_empty())
+        });
+        self.list_state.select(first_header);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> SessionListAction {
@@ -326,14 +354,17 @@ impl SessionList {
             return;
         };
 
-        // Walk backwards from current (or selected) row to find nearest non-empty GroupHeader.
-        let group_dir = self.display_rows[..=selected_row]
-            .iter()
-            .rev()
-            .find_map(|r| match r {
-                DisplayRow::GroupHeader { dir, .. } if !dir.is_empty() => Some(dir.clone()),
-                _ => None,
-            });
+        // If selected row is directly a non-empty header, use it; otherwise walk backwards.
+        let group_dir = match self.display_rows.get(selected_row) {
+            Some(DisplayRow::GroupHeader { dir, .. }) if !dir.is_empty() => Some(dir.clone()),
+            _ => self.display_rows[..=selected_row]
+                .iter()
+                .rev()
+                .find_map(|r| match r {
+                    DisplayRow::GroupHeader { dir, .. } if !dir.is_empty() => Some(dir.clone()),
+                    _ => None,
+                }),
+        };
 
         let Some(dir) = group_dir else { return };
 
@@ -496,16 +527,24 @@ impl SessionList {
                     }
                     DisplayRow::GroupHeader { dir, collapsed } => {
                         // Directory header: 1 row
+                        let is_selected = self.list_state.selected() == Some(row_idx);
                         let arrow = if *collapsed { "▶ " } else { "▼ " };
                         let short_dir =
                             shorten_path(dir, (cards_area.width as usize).saturating_sub(3));
                         let header_text = format!("{arrow}{short_dir}");
+                        let header_style = if is_selected {
+                            Style::default()
+                                .fg(theme::ORANGE_BRIGHT)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(theme::CYAN)
+                                .add_modifier(Modifier::BOLD)
+                        };
                         frame.render_widget(
                             Paragraph::new(Line::from(vec![Span::styled(
                                 header_text,
-                                Style::default()
-                                    .fg(theme::CYAN)
-                                    .add_modifier(Modifier::BOLD),
+                                header_style,
                             )])),
                             Rect::new(cards_area.x + 1, y, cards_area.width.saturating_sub(2), 1),
                         );
@@ -569,7 +608,13 @@ impl SessionList {
 
         let (title, border_fg) = match selected {
             Some(s) => (format!(" {} ", s.tmux_session_name), theme::ORANGE),
-            None => (" no session selected ".to_string(), theme::BLUE),
+            None => match self.selected_header_dir() {
+                Some(dir) => (
+                    format!(" {} ", shorten_path(dir, 40)),
+                    theme::CYAN,
+                ),
+                None => (" no session selected ".to_string(), theme::BLUE),
+            },
         };
 
         let outer_block = Block::default()
@@ -1315,5 +1360,49 @@ mod tests {
         let action = list.handle_key(key(KeyCode::Char('z')));
         assert_eq!(action, SessionListAction::None);
         assert!(list.collapsed_dirs.is_empty());
+    }
+
+    #[test]
+    fn test_all_collapsed_header_selected() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Collapse /proj/a (selected at alpha)
+        list.handle_key(key(KeyCode::Char('z')));
+        // Collapse /proj/b (gamma is now selected)
+        list.handle_key(key(KeyCode::Char('z')));
+        // Both collapsed — a non-empty header should be selected
+        let sel = list.list_state.selected().expect("should have selection");
+        assert!(matches!(
+            &list.display_rows[sel],
+            DisplayRow::GroupHeader { dir, .. } if !dir.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_expand_from_header_when_all_collapsed() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Collapse both groups
+        list.handle_key(key(KeyCode::Char('z')));
+        list.handle_key(key(KeyCode::Char('z')));
+        // Press z on selected header to expand it
+        list.handle_key(key(KeyCode::Char('z')));
+        // At least one session should be visible
+        let has_session = list
+            .display_rows
+            .iter()
+            .any(|r| matches!(r, DisplayRow::Session(_)));
+        assert!(has_session);
+    }
+
+    #[test]
+    fn test_navigate_between_collapsed_headers() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Collapse both groups
+        list.handle_key(key(KeyCode::Char('z')));
+        list.handle_key(key(KeyCode::Char('z')));
+        // j should cycle between the two collapsed headers
+        let sel_before = list.list_state.selected().unwrap();
+        list.handle_key(key(KeyCode::Char('j')));
+        let sel_after = list.list_state.selected().unwrap();
+        assert_ne!(sel_before, sel_after);
     }
 }
