@@ -1,6 +1,41 @@
 use color_eyre::{Result, eyre::eyre};
 use std::process::Command;
 
+trait CommandRunner {
+    fn run(&self, args: &[&str]) -> Result<()>;
+    fn run_capturing(&self, args: &[&str]) -> Result<String>;
+}
+
+struct ProcessRunner;
+
+impl CommandRunner for ProcessRunner {
+    fn run(&self, args: &[&str]) -> Result<()> {
+        let output = Command::new("tmux").args(args).output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!(
+                "tmux command failed: tmux {} — {}",
+                args.join(" "),
+                stderr.trim()
+            ));
+        }
+        Ok(())
+    }
+
+    fn run_capturing(&self, args: &[&str]) -> Result<String> {
+        let output = Command::new("tmux").args(args).output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!(
+                "tmux command failed: tmux {} — {}",
+                args.join(" "),
+                stderr.trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+}
+
 #[derive(Debug)]
 pub struct TmuxSession {
     pub session_id: String,
@@ -47,12 +82,14 @@ pub fn sanitize_session_name(title: &str) -> String {
 
 /// Check if a tmux session with the given name already exists.
 pub fn session_exists(name: &str) -> Result<bool> {
-    let status = Command::new("tmux")
-        .args(["has-session", "-t", name])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    Ok(status.success())
+    session_exists_with(&ProcessRunner, name)
+}
+
+fn session_exists_with(runner: &dyn CommandRunner, name: &str) -> Result<bool> {
+    match runner.run(&["has-session", "-t", name]) {
+        Ok(()) => Ok(true),
+        Err(_) => Ok(false),
+    }
 }
 
 /// Create a new tmux session with Claude and editor windows.
@@ -72,14 +109,37 @@ pub fn create_session(
     claude_command: &str,
     model_id: Option<&str>,
 ) -> Result<TmuxSession> {
-    // Canonicalize the base directory so tmux gets an absolute, resolved path
+    create_session_with(
+        &ProcessRunner,
+        name,
+        dir,
+        prompt,
+        claude_args,
+        claude_session_id,
+        use_worktree,
+        claude_command,
+        model_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_session_with(
+    runner: &dyn CommandRunner,
+    name: &str,
+    dir: &str,
+    prompt: Option<&str>,
+    claude_args: Option<&str>,
+    claude_session_id: &str,
+    use_worktree: bool,
+    claude_command: &str,
+    model_id: Option<&str>,
+) -> Result<TmuxSession> {
     let abs_dir = std::path::Path::new(dir)
         .canonicalize()
         .map_err(|e| eyre!("Cannot resolve directory '{dir}': {e}"))?
         .to_string_lossy()
         .to_string();
 
-    // Build the claude command with optional extra args and prompt
     let claude_cmd = build_claude_cmd(
         name,
         claude_session_id,
@@ -92,9 +152,8 @@ pub fn create_session(
 
     let window_name = window_name_from_command(claude_command);
 
-    // Create detached session with an idle shell — pane survives if claude exits
-    let output = Command::new("tmux")
-        .args([
+    runner
+        .run(&[
             "new-session",
             "-d",
             "-s",
@@ -104,36 +163,18 @@ pub fn create_session(
             "-c",
             &abs_dir,
         ])
-        .stdin(std::process::Stdio::null())
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(eyre!("Failed to create tmux session '{name}': {stderr}"));
-    }
+        .map_err(|_| eyre!("Failed to create tmux session '{name}'"))?;
 
-    // Send the claude command to the pane so it starts in the shell context.
-    // The pane stays alive after claude exits (shell remains).
     let target = format!("{name}:{window_name}");
-    let send_output = Command::new("tmux")
-        .args(["send-keys", "-t", &target, &claude_cmd, "Enter"])
-        .output()?;
-    if !send_output.status.success() {
-        let stderr = String::from_utf8_lossy(&send_output.stderr);
-        return Err(eyre!(
-            "Failed to send claude command to pane '{target}': {stderr}"
-        ));
-    }
+    runner
+        .run(&["send-keys", "-t", &target, &claude_cmd, "Enter"])
+        .map_err(|_| eyre!("Failed to send claude command to pane '{target}'"))?;
 
-    // Capture session ID
-    let output = Command::new("tmux")
-        .args(["display-message", "-t", name, "-p", "#{session_id}"])
-        .output()?;
-    if !output.status.success() {
-        return Err(eyre!("Failed to get session ID for '{name}'"));
-    }
+    let stdout = runner
+        .run_capturing(&["display-message", "-t", name, "-p", "#{session_id}"])
+        .map_err(|_| eyre!("Failed to get session ID for '{name}'"))?;
 
-    let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
+    let session_id = stdout.trim().to_string();
     Ok(TmuxSession { session_id })
 }
 
@@ -142,6 +183,15 @@ pub fn create_session(
 /// `window_name` is the tmux window name (e.g. "claude", "cc") — must match what was
 /// used when creating the session.
 pub fn setup_editor_window(session_name: &str, directory: &str, window_name: &str) -> Result<()> {
+    setup_editor_window_with(&ProcessRunner, session_name, directory, window_name)
+}
+
+fn setup_editor_window_with(
+    runner: &dyn CommandRunner,
+    session_name: &str,
+    directory: &str,
+    window_name: &str,
+) -> Result<()> {
     let abs_dir = std::path::Path::new(directory)
         .canonicalize()
         .map_err(|e| eyre!("Cannot resolve directory '{directory}': {e}"))?
@@ -151,7 +201,6 @@ pub fn setup_editor_window(session_name: &str, directory: &str, window_name: &st
     let worktree_dir = format!("{abs_dir}/.claude/worktrees/{session_name}");
     let worktree_path = std::path::Path::new(&worktree_dir);
 
-    // Use worktree dir if it exists, otherwise fall back to project dir
     let pane_dir = if worktree_path.exists() {
         &worktree_dir
     } else {
@@ -160,14 +209,9 @@ pub fn setup_editor_window(session_name: &str, directory: &str, window_name: &st
 
     let target = format!("{session_name}:{window_name}");
 
-    // Split claude window horizontally to add a terminal pane on the right
-    run_tmux(&["split-window", "-h", "-t", &target, "-c", pane_dir])?;
-
-    // Split the right pane vertically to get two stacked panes on the right
-    run_tmux(&["split-window", "-v", "-t", &target, "-c", pane_dir])?;
-
-    // Focus back on the claude pane (left)
-    run_tmux(&["select-pane", "-L", "-t", &target])?;
+    runner.run(&["split-window", "-h", "-t", &target, "-c", pane_dir])?;
+    runner.run(&["split-window", "-v", "-t", &target, "-c", pane_dir])?;
+    runner.run(&["select-pane", "-L", "-t", &target])?;
 
     Ok(())
 }
@@ -175,70 +219,61 @@ pub fn setup_editor_window(session_name: &str, directory: &str, window_name: &st
 /// Create a plain tmux session (no Claude) with a single window and a vertical split.
 /// Both panes start in the given directory.
 pub fn create_plain_session(name: &str, dir: &str) -> Result<TmuxSession> {
+    create_plain_session_with(&ProcessRunner, name, dir)
+}
+
+fn create_plain_session_with(runner: &dyn CommandRunner, name: &str, dir: &str) -> Result<TmuxSession> {
     let abs_dir = std::path::Path::new(dir)
         .canonicalize()
         .map_err(|e| eyre!("Cannot resolve directory '{dir}': {e}"))?
         .to_string_lossy()
         .to_string();
 
-    // Create detached session starting in the directory
-    let output = Command::new("tmux")
-        .args(["new-session", "-d", "-s", name, "-c", &abs_dir])
-        .stdin(std::process::Stdio::null())
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(eyre!("Failed to create tmux session '{name}': {stderr}"));
-    }
+    runner
+        .run(&["new-session", "-d", "-s", name, "-c", &abs_dir])
+        .map_err(|_| eyre!("Failed to create tmux session '{name}'"))?;
 
-    // Split the window vertically
-    run_tmux(&["split-window", "-h", "-t", name, "-c", &abs_dir])?;
+    runner.run(&["split-window", "-h", "-t", name, "-c", &abs_dir])?;
+    runner.run(&["select-pane", "-L", "-t", name])?;
 
-    // Focus the left pane
-    run_tmux(&["select-pane", "-L", "-t", name])?;
+    let stdout = runner
+        .run_capturing(&["display-message", "-t", name, "-p", "#{session_id}"])
+        .map_err(|_| eyre!("Failed to get session ID for '{name}'"))?;
 
-    // Capture session ID
-    let output = Command::new("tmux")
-        .args(["display-message", "-t", name, "-p", "#{session_id}"])
-        .output()?;
-    if !output.status.success() {
-        return Err(eyre!("Failed to get session ID for '{name}'"));
-    }
-
-    let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
+    let session_id = stdout.trim().to_string();
     Ok(TmuxSession { session_id })
 }
 
 /// Switch the current tmux client to the given session.
 /// Use this instead of attach-session when already inside tmux.
 pub fn switch_to_session(name: &str) -> Result<()> {
-    run_tmux(&["switch-client", "-t", name])
+    ProcessRunner.run(&["switch-client", "-t", name])
 }
 
 /// Kill a tmux session by name.
 pub fn kill_session(name: &str) -> Result<()> {
-    run_tmux(&["kill-session", "-t", name])
+    ProcessRunner.run(&["kill-session", "-t", name])
 }
 
 /// Capture the visible content of the active pane in a tmux session.
 pub fn capture_pane(session_name: &str) -> Result<String> {
-    let output = Command::new("tmux")
-        .args(["capture-pane", "-p", "-t", session_name])
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(eyre!(
-            "Failed to capture pane for '{session_name}': {stderr}"
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    capture_pane_with(&ProcessRunner, session_name)
+}
+
+fn capture_pane_with(runner: &dyn CommandRunner, session_name: &str) -> Result<String> {
+    runner
+        .run_capturing(&["capture-pane", "-p", "-t", session_name])
+        .map_err(|_| eyre!("Failed to capture pane for '{session_name}'"))
 }
 
 /// Return a summary of windows, panes, and running programs for a tmux session.
 pub fn session_summary(session_name: &str) -> Result<SessionSummary> {
-    let output = Command::new("tmux")
-        .args([
+    session_summary_with(&ProcessRunner, session_name)
+}
+
+fn session_summary_with(runner: &dyn CommandRunner, session_name: &str) -> Result<SessionSummary> {
+    let stdout = runner
+        .run_capturing(&[
             "list-panes",
             "-s",
             "-t",
@@ -246,12 +281,8 @@ pub fn session_summary(session_name: &str) -> Result<SessionSummary> {
             "-F",
             "#{window_index}:#{pane_current_command}",
         ])
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(eyre!("Failed to list panes for '{session_name}': {stderr}"));
-    }
-    Ok(parse_summary(&String::from_utf8_lossy(&output.stdout)))
+        .map_err(|_| eyre!("Failed to list panes for '{session_name}'"))?;
+    Ok(parse_summary(&stdout))
 }
 
 /// Parse `tmux list-panes -F '#{window_index}:#{pane_current_command}'` output.
@@ -329,22 +360,51 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn run_tmux(args: &[&str]) -> Result<()> {
-    let output = Command::new("tmux").args(args).output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(eyre!(
-            "tmux command failed: tmux {} — {}",
-            args.join(" "),
-            stderr.trim()
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    struct FakeRunner {
+        /// Responses for run_capturing calls, consumed in order.
+        capturing_responses: RefCell<Vec<Result<String>>>,
+        /// Whether run() calls should succeed.
+        run_ok: bool,
+    }
+
+    impl FakeRunner {
+        fn ok(capturing: Vec<&str>) -> Self {
+            FakeRunner {
+                capturing_responses: RefCell::new(
+                    capturing.into_iter().map(|s| Ok(s.to_string())).collect(),
+                ),
+                run_ok: true,
+            }
+        }
+
+        fn failing() -> Self {
+            FakeRunner {
+                capturing_responses: RefCell::new(vec![]),
+                run_ok: false,
+            }
+        }
+    }
+
+    impl CommandRunner for FakeRunner {
+        fn run(&self, _args: &[&str]) -> Result<()> {
+            if self.run_ok {
+                Ok(())
+            } else {
+                Err(eyre!("tmux command failed"))
+            }
+        }
+
+        fn run_capturing(&self, _args: &[&str]) -> Result<String> {
+            self.capturing_responses
+                .borrow_mut()
+                .remove(0)
+        }
+    }
 
     #[test]
     fn test_parse_summary_counts_windows_and_panes() {
@@ -527,6 +587,61 @@ mod tests {
             cmd.contains("--model claude-haiku-4-5-20251001"),
             "cmd: {cmd}"
         );
+    }
+
+    #[test]
+    fn test_session_exists_true_when_run_ok() {
+        let runner = FakeRunner::ok(vec![]);
+        assert!(session_exists_with(&runner, "any").unwrap());
+    }
+
+    #[test]
+    fn test_session_exists_false_when_run_fails() {
+        let runner = FakeRunner::failing();
+        assert!(!session_exists_with(&runner, "any").unwrap());
+    }
+
+    #[test]
+    fn test_capture_pane_returns_stdout() {
+        let runner = FakeRunner::ok(vec!["pane content\n"]);
+        let result = capture_pane_with(&runner, "my-session").unwrap();
+        assert_eq!(result, "pane content\n");
+    }
+
+    #[test]
+    fn test_session_summary_with_fake() {
+        let runner = FakeRunner::ok(vec!["0:claude\n0:zsh\n1:nvim\n"]);
+        let summary = session_summary_with(&runner, "my-session").unwrap();
+        assert_eq!(summary.window_count, 2);
+        assert_eq!(summary.pane_count, 3);
+        assert_eq!(summary.programs, vec!["claude", "nvim"]);
+    }
+
+    #[test]
+    fn test_create_session_with_fake_returns_session_id() {
+        // Responses: new-session run ok, send-keys run ok, display-message capturing
+        let runner = FakeRunner::ok(vec!["$42\n"]);
+        let result = create_session_with(
+            &runner,
+            "test-session",
+            "/tmp",
+            None,
+            None,
+            "uuid-123",
+            false,
+            "claude",
+            None,
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().session_id, "$42");
+    }
+
+    #[test]
+    fn test_create_plain_session_with_fake_returns_session_id() {
+        let runner = FakeRunner::ok(vec!["$7\n"]);
+        let result = create_plain_session_with(&runner, "plain-session", "/tmp");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().session_id, "$7");
     }
 
     #[test]
