@@ -29,3 +29,15 @@ Reusable state for filterable, scrollable selection lists in `app.rs`. Owns `ite
 ## CommandRunner
 
 Seam over `std::process::Command` in `tmux.rs`. Two methods: `run` (fire-and-forget) and `run_capturing` (returns stdout). `ProcessRunner` is the production impl; `FakeRunner` is the test impl. Defined inside `tmux.rs` — not shared, because only tmux needs it (git uses real temp repos in tests instead).
+
+## SessionLauncher
+
+Orchestrates the 4-step Claude session launch pipeline in `src/session_launcher.rs`: (1) git prep → (2) DB insert → (3) tmux create → (4) DB update with real tmux session ID. Owns rollback logic: each step failure undoes all prior steps. Holds three adapter traits (`GitAdapter`, `TmuxAdapter`, `SessionDbAdapter`) injected at construction so the pipeline is unit-testable with fakes.
+
+## GitUndo
+
+Return value of `git::prepare_branch` and `git::prepare_worktree`. Describes how to reverse the git state change on failure: `CheckoutBranch(original)` — just checkout back; `CheckoutAndDeleteBranch { original, created }` — checkout back and delete the newly-created branch; `Nothing` — no git changes were made. Consumed by `git::undo`.
+
+## GitAdapter / TmuxAdapter / SessionDbAdapter
+
+Three traits in `src/session_launcher.rs` that `SessionLauncher` depends on. Production impls: `RealGitAdapter` (delegates to `git::`), `RealTmuxAdapter` (delegates to `tmux::`), `RealSessionDb` (wraps `SessionDb` with `insert`/`remove_by_name`/`update_tmux_id` methods). Test fakes live in `session_launcher.rs` `#[cfg(test)]`.

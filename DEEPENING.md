@@ -20,7 +20,7 @@ Architectural refactors that turn shallow modules into deep ones — more levera
 
 ## 2. Session launch pipeline in `main.rs` needs a seam
 
-**Status:** Open
+**Status:** Done
 
 **Files:** `src/main.rs` (lines 366–460), `src/session.rs`, `src/tmux.rs`, `src/git.rs`
 
