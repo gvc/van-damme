@@ -726,16 +726,15 @@ impl SessionList {
 }
 
 fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_selected: bool) {
-    let (icon, state_color) = if session.claude_session_id.is_none() {
-        // Plain tmux session — use a neutral indicator
-        ("🖥", theme::GRAY_DIM)
+    let (status_label, state_color) = if session.claude_session_id.is_none() {
+        ("", theme::GRAY_DIM)
     } else {
-        let color = match session.state {
-            SessionState::Working => theme::ORANGE_BRIGHT,
-            SessionState::WaitingUser => theme::CYAN,
-            SessionState::Idle => theme::GRAY_DIM,
+        let (label, color) = match session.state {
+            SessionState::Working => ("working", theme::ORANGE_BRIGHT),
+            SessionState::WaitingUser => ("waiting", theme::CYAN_VIVID),
+            SessionState::Idle => ("idle", theme::GRAY_DIM),
         };
-        (session.state.icon(), color)
+        (label, color)
     };
 
     let border_fg = if is_selected {
@@ -756,10 +755,6 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
     }
 
     let content_w = card_inner.width as usize;
-    // All state icons are emoji and display as 2 terminal columns.
-    const ICON_COLS: usize = 2;
-    const ICON_GAP: usize = 1;
-    const PREFIX: usize = ICON_COLS + ICON_GAP; // 3 cols before name text
 
     let rows = Layout::vertical([
         Constraint::Length(1),
@@ -768,8 +763,9 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
     ])
     .split(card_inner);
 
-    // Row 0: icon + session name
-    let max_name = content_w.saturating_sub(PREFIX);
+    // Row 0: session name (left) + status label (right-aligned)
+    let status_w = status_label.len();
+    let max_name = content_w.saturating_sub(if status_w > 0 { status_w + 1 } else { 0 });
     let name = truncate_str(&session.tmux_session_name, max_name);
     let name_style = if is_selected {
         Style::default()
@@ -780,22 +776,32 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
             .fg(theme::SESSION_NAME)
             .add_modifier(Modifier::BOLD)
     };
+    let name_display_w = name.chars().count();
+    let gap = content_w.saturating_sub(name_display_w + status_w);
+    let padding = " ".repeat(gap);
+    let status_style = if matches!(session.state, SessionState::WaitingUser) {
+        Style::default()
+            .fg(state_color)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(state_color)
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(icon, Style::default().fg(state_color)),
-            Span::raw(" "),
             Span::styled(name, name_style),
+            Span::raw(padding),
+            Span::styled(status_label, status_style),
         ])),
         rows[0],
     );
 
-    // Row 1: directory (indented to align with name)
-    let dir = shorten_path(&session.directory, content_w.saturating_sub(PREFIX));
+    // Row 1: directory
+    let dir = shorten_path(&session.directory, content_w);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw("   "),
-            Span::styled(dir, Style::default().fg(theme::GRAY_DIM)),
-        ])),
+        Paragraph::new(Line::from(Span::styled(
+            dir,
+            Style::default().fg(theme::GRAY_DIM),
+        ))),
         rows[1],
     );
 
@@ -804,12 +810,12 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
         Some(m) => format!("{} · {}", session.claude_command, shorten_model_id(m)),
         None => session.claude_command.clone(),
     };
-    let cmd_tag = truncate_str(&cmd_tag, content_w.saturating_sub(PREFIX));
+    let cmd_tag = truncate_str(&cmd_tag, content_w);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw("   "),
-            Span::styled(cmd_tag, Style::default().fg(theme::GRAY_DIM)),
-        ])),
+        Paragraph::new(Line::from(Span::styled(
+            cmd_tag,
+            Style::default().fg(theme::GRAY_DIM),
+        ))),
         rows[2],
     );
 }
