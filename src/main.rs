@@ -1,4 +1,5 @@
 mod app;
+mod autocomplete;
 mod event;
 mod git;
 mod grouped_list;

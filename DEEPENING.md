@@ -4,15 +4,17 @@ Architectural refactors that turn shallow modules into deep ones — more levera
 
 ## 1. Split `app.rs` (2890 lines) into deep modules
 
-**Status:** Open
+**Status:** Done
 
-**Files:** `src/app.rs`
+**Files:** `src/app.rs`, `src/autocomplete.rs`
 
-**Problem:** 7 concerns in one module — form state, keyboard dispatch, directory autocomplete, branch autocomplete, recent-dirs dropdown, model selection, rendering. Autocomplete calls `std::fs::read_dir` and `git::get_local_branches` directly — no seam, untestable without real filesystem/git. Locality is poor: understanding "what happens when user tabs in directory field" requires tracing ~5 methods spread across the file.
+**Problem:** 7 concerns in one module — form state, keyboard dispatch, directory autocomplete, branch autocomplete, recent-dirs dropdown, model selection, rendering. Autocomplete called `std::fs::read_dir` and `git::get_local_branches` directly, scattered across 5 methods. Dropdown state spread across 10 fields on `App`.
 
-**Solution:** Extract autocomplete logic (directory + branch) into a module with a testable interface. Extract recent-dirs dropdown into its own widget. Keep `App` as thin orchestrator.
+**Solution:**
+- Extracted `src/autocomplete.rs` with `DirCompleter` and `BranchCompleter` plain structs (no trait — only two impls, no polymorphism needed). `longest_common_prefix` moved here. Tests use real filesystem and real git repos — no mocks (same reasoning as item #4: mock/prod divergence risk).
+- Extracted `Dropdown` struct into `app.rs` — owns `items`, `selected`, `scroll`, `visible`, `query` plus methods `open`, `close`, `filtered`, `select_next`, `select_prev`, `selected_value`, `push_query_char`, `pop_query_char`. `App` now holds `recent_dirs_dropdown: Dropdown` and `branch_dropdown: Dropdown` instead of 10 scattered fields.
 
-**Benefits:** Autocomplete becomes unit-testable (inject a path-lister instead of hitting filesystem). Each extracted module has better locality. `App` becomes a shallow coordinator rather than a deep monolith.
+**Benefits:** Autocomplete logic has locality — dir and branch completion live in one module. `App` field count reduced. Keyboard handlers delegate to `Dropdown` methods instead of manipulating raw fields.
 
 ---
 

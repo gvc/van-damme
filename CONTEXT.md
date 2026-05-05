@@ -18,6 +18,14 @@ Lifecycle state of a Claude session: `Working` (Claude is running), `WaitingUser
 
 Returns `~/.van-damme/sessions.json`. Public so callers pass it explicitly to `SessionDb::open`.
 
+## DirCompleter / BranchCompleter
+
+Two plain structs in `src/autocomplete.rs`. `DirCompleter` wraps filesystem enumeration to suggest and complete directory paths. `BranchCompleter` wraps `git::get_local_branches` to suggest and complete branch names. Both expose `complete(input) -> Option<String>` (tab press result) and `suggest(input) -> Option<String>` (ghost suffix). No shared trait — only two impls, no polymorphism needed.
+
+## Dropdown
+
+Reusable state for filterable, scrollable selection lists in `app.rs`. Owns `items`, `selected`, `scroll`, `visible`, `query`. Methods: `open` (populate + show), `close` (hide + reset), `filtered` (query-filtered view), `select_next`/`select_prev` (with scroll adjustment), `selected_value`, `push_query_char`/`pop_query_char`. `App` holds two: `recent_dirs_dropdown` and `branch_dropdown`.
+
 ## CommandRunner
 
 Seam over `std::process::Command` in `tmux.rs`. Two methods: `run` (fire-and-forget) and `run_capturing` (returns stdout). `ProcessRunner` is the production impl; `FakeRunner` is the test impl. Defined inside `tmux.rs` — not shared, because only tmux needs it (git uses real temp repos in tests instead).
