@@ -779,7 +779,8 @@ impl App {
         if matches.is_empty() {
             return false;
         }
-        let common = longest_common_prefix(&matches.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let common =
+            longest_common_prefix(&matches.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         if common == prefix {
             return false;
         }
@@ -2643,15 +2644,43 @@ mod tests {
 
     fn init_test_repo_with_branches(dir: &std::path::Path, branches: &[&str]) {
         use std::process::Command;
-        Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
-        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(dir).output().unwrap();
-        Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir).output().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         std::fs::write(dir.join("README.md"), "init").unwrap();
-        Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
-        Command::new("git").args(["commit", "-m", "initial"]).current_dir(dir).output().unwrap();
-        Command::new("git").args(["branch", "-M", "main"]).current_dir(dir).output().unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         for branch in branches {
-            Command::new("git").args(["branch", branch]).current_dir(dir).output().unwrap();
+            Command::new("git")
+                .args(["branch", branch])
+                .current_dir(dir)
+                .output()
+                .unwrap();
         }
     }
 
@@ -2712,7 +2741,8 @@ mod tests {
         app.branch_name_input = Input::new("feat".to_string());
         // Move cursor to end
         for _ in 0.."feat".len() {
-            app.branch_name_input.handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
+            app.branch_name_input
+                .handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
         }
         app.update_branch_suggestion();
 
@@ -2733,7 +2763,8 @@ mod tests {
         app.dir_input = Input::new(dir);
         app.branch_name_input = Input::new("feat".to_string());
         for _ in 0.."feat".len() {
-            app.branch_name_input.handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
+            app.branch_name_input
+                .handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
         }
         app.update_branch_suggestion();
 

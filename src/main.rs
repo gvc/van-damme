@@ -1,6 +1,7 @@
 mod app;
 mod event;
 mod git;
+mod grouped_list;
 mod install;
 mod preferences;
 mod process_hook;
