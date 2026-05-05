@@ -1,11 +1,14 @@
 mod app;
+mod autocomplete;
 mod event;
 mod git;
+mod grouped_list;
 mod install;
 mod preferences;
 mod process_hook;
 mod recent_dirs;
 mod session;
+mod session_launcher;
 mod session_list;
 pub mod theme;
 mod tmux;
@@ -78,7 +81,10 @@ fn main() -> Result<()> {
     let mut terminal = tui::init()?;
     let events = EventHandler::new(250);
 
-    let sessions = session::list_sessions().unwrap_or_default();
+    let sessions = session::default_db_path()
+        .and_then(|p| session::SessionDb::open(&p))
+        .map(|db| db.sessions.clone())
+        .unwrap_or_default();
     // Filter to only sessions still alive in tmux
     let alive: Vec<_> = sessions
         .into_iter()
@@ -339,7 +345,7 @@ fn spawn_launch(
     let (progress_tx, progress_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
     thread::spawn(move || {
-        let result = launch_session(
+        let result = run_launch_session(
             &title,
             &directory,
             git_mode,
@@ -363,7 +369,7 @@ fn spawn_launch(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn launch_session(
+fn run_launch_session(
     title: &str,
     directory: &str,
     git_mode: app::GitMode,
@@ -373,14 +379,6 @@ fn launch_session(
     model_selection: app::ModelSelection,
     progress: &mpsc::Sender<String>,
 ) -> Result<()> {
-    let session_name = tmux::sanitize_session_name(title);
-
-    if session_name.is_empty() {
-        return Err(color_eyre::eyre::eyre!(
-            "Title '{title}' produces an empty session name"
-        ));
-    }
-
     if std::process::Command::new("tmux")
         .arg("-V")
         .stdout(std::process::Stdio::null())
@@ -393,71 +391,34 @@ fn launch_session(
         ));
     }
 
-    if tmux::session_exists(&session_name)? {
-        return Err(color_eyre::eyre::eyre!(
-            "tmux session '{session_name}' already exists"
-        ));
-    }
-
-    // Prepare git state before launching Claude
-    let use_worktree = git_mode == app::GitMode::Worktree;
-    match git_mode {
-        app::GitMode::Worktree => {
-            git::prepare_worktree(directory, |step| {
-                let _ = progress.send(step.to_string());
-            })?;
-        }
-        app::GitMode::Branch => {
-            if let Some(branch) = branch_name {
-                let _ = progress.send(format!("Preparing branch '{branch}'..."));
-                git::prepare_branch(directory, branch)?;
-                let _ = progress.send(format!("Branch '{branch}' ready"));
-            }
-        }
-    }
-
-    // Generate the claude session UUID and persist the record BEFORE creating the
-    // tmux session. Claude's SessionStart hook fires immediately on launch and needs
-    // the record to already exist in the DB to set up the editor window.
     let claude_session_id = uuid::Uuid::new_v4().to_string();
+    let db_path = session::default_db_path()?;
+    let mut db = session_launcher::RealSessionDb::open(&db_path)?;
 
-    let _ = progress.send("Creating tmux session...".into());
-
-    session::add_session(
-        String::new(), // placeholder — updated after tmux session is created
-        session_name.clone(),
-        claude_session_id.clone(),
-        directory.to_string(),
-        claude_command.to_string(),
-        model_selection.model_id().map(str::to_string),
-    )?;
-
-    let tmux_session = match tmux::create_session(
-        &session_name,
+    let result = session_launcher::SessionLauncher::new(
+        &session_launcher::RealGitAdapter,
+        &session_launcher::RealTmuxAdapter,
+        &mut db,
+    )
+    .launch(
+        title,
         directory,
+        git_mode,
+        branch_name,
         prompt,
-        None,
-        &claude_session_id,
-        use_worktree,
         claude_command,
-        model_selection.model_id(),
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            // Clean up the DB record if tmux session creation fails
-            let _ = session::remove_session(&session_name);
-            return Err(e);
-        }
-    };
+        model_selection,
+        &claude_session_id,
+        &|msg: &str| {
+            let _ = progress.send(msg.to_string());
+        },
+    );
 
-    // Update the record with the real tmux session ID
-    session::update_tmux_session_id(&session_name, &tmux_session.session_id)?;
+    if result.is_ok() {
+        recent_dirs::record_directory(directory)?;
+    }
 
-    recent_dirs::record_directory(directory)?;
-
-    let _ = progress.send("Session launched".into());
-
-    Ok(())
+    result
 }
 
 fn spawn_tmux_launch(session_name: String, directory: String) -> LaunchState {
@@ -500,11 +461,29 @@ fn launch_tmux_session(
 
     let tmux_session = tmux::create_plain_session(session_name, directory)?;
 
-    session::add_plain_session(
-        tmux_session.session_id,
-        session_name.to_string(),
-        directory.to_string(),
-    )?;
+    {
+        let db_path = session::default_db_path()?;
+        let mut db = session::SessionDb::open(&db_path)?;
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let dir = {
+            let t = directory.trim_end_matches('/');
+            if t.is_empty() { "/".to_string() } else { t.to_string() }
+        };
+        db.sessions.push(session::SessionRecord {
+            tmux_session_id: tmux_session.session_id,
+            tmux_session_name: session_name.to_string(),
+            claude_session_id: None,
+            directory: dir,
+            created_at,
+            state: session::SessionState::Idle,
+            claude_command: "claude".to_string(),
+            model_id: None,
+        });
+        db.save()?;
+    }
 
     recent_dirs::record_directory(directory)?;
 

@@ -1,8 +1,9 @@
 use color_eyre::{Result, eyre::eyre};
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum SessionState {
@@ -44,211 +45,245 @@ fn default_claude_command() -> String {
     "claude".to_string()
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct SessionDb {
     pub sessions: Vec<SessionRecord>,
+    file: File,
+}
+
+impl SessionDb {
+    /// Open the session database at `path`, creating it if missing.
+    /// Acquires an exclusive flock for the lifetime of this SessionDb.
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+
+        let fd = file.as_raw_fd();
+        let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
+        if ret != 0 {
+            return Err(eyre!(
+                "flock failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let contents = fs::read_to_string(path)?;
+        let mut sessions: Vec<SessionRecord> = if contents.trim().is_empty() {
+            Vec::new()
+        } else {
+            let db: SessionDbJson = serde_json::from_str(&contents)?;
+            db.sessions
+        };
+
+        for s in &mut sessions {
+            let t = s.directory.trim_end_matches('/');
+            s.directory = if t.is_empty() {
+                "/".to_string()
+            } else {
+                t.to_string()
+            };
+        }
+
+        Ok(SessionDb { sessions, file })
+    }
+
+    /// Write current sessions to disk. Lock remains held.
+    pub fn save(&mut self) -> Result<()> {
+        let json = serde_json::to_string_pretty(&SessionDbJson {
+            sessions: self.sessions.clone(),
+        })?;
+        self.file.set_len(0)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(json.as_bytes())?;
+        self.file.flush()?;
+        Ok(())
+    }
+}
+
+impl Drop for SessionDb {
+    fn drop(&mut self) {
+        let fd = self.file.as_raw_fd();
+        unsafe { libc::flock(fd, libc::LOCK_UN) };
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct SessionDbJson {
+    sessions: Vec<SessionRecord>,
 }
 
 /// Returns the default path to ~/.van-damme/sessions.json
-fn default_db_path() -> Result<PathBuf> {
+pub fn default_db_path() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| eyre!("Could not determine home directory"))?;
     Ok(home.join(".van-damme").join("sessions.json"))
-}
-
-/// Load the session database from the given path. Returns empty DB if file doesn't exist.
-fn load_db_from(path: &Path) -> Result<SessionDb> {
-    if !path.exists() {
-        return Ok(SessionDb::default());
-    }
-    let contents = fs::read_to_string(path)?;
-    let mut db: SessionDb = serde_json::from_str(&contents)?;
-    for s in &mut db.sessions {
-        let t = s.directory.trim_end_matches('/');
-        s.directory = if t.is_empty() {
-            "/".to_string()
-        } else {
-            t.to_string()
-        };
-    }
-    Ok(db)
-}
-
-/// Save the session database to the given path, creating parent dirs as needed.
-fn save_db_to(path: &Path, db: &SessionDb) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(db)?;
-    fs::write(path, json)?;
-    Ok(())
-}
-
-/// Load all session records from disk.
-pub fn list_sessions() -> Result<Vec<SessionRecord>> {
-    let path = default_db_path()?;
-    list_sessions_from(&path)
-}
-
-/// Find a session record by its claude session id.
-pub fn find_by_claude_session(claude_session_id: &str) -> Result<Option<SessionRecord>> {
-    let path = default_db_path()?;
-    let db = load_db_from(&path)?;
-    Ok(db
-        .sessions
-        .into_iter()
-        .find(|s| s.claude_session_id.as_deref() == Some(claude_session_id)))
-}
-
-fn list_sessions_from(path: &Path) -> Result<Vec<SessionRecord>> {
-    let db = load_db_from(path)?;
-    Ok(db.sessions)
-}
-
-/// Remove a session record by tmux session name and persist to disk.
-pub fn remove_session(tmux_session_name: &str) -> Result<()> {
-    let path = default_db_path()?;
-    remove_session_from(&path, tmux_session_name)
-}
-
-fn remove_session_from(path: &Path, tmux_session_name: &str) -> Result<()> {
-    let mut db = load_db_from(path)?;
-    db.sessions
-        .retain(|s| s.tmux_session_name != tmux_session_name);
-    save_db_to(path, &db)?;
-    Ok(())
-}
-
-/// Update the state of a session by claude session id.
-pub fn update_state_by_claude_session(claude_session_id: &str, state: SessionState) -> Result<()> {
-    let path = default_db_path()?;
-    update_state_by_claude_session_at(&path, claude_session_id, state)
-}
-
-fn update_state_by_claude_session_at(
-    path: &Path,
-    claude_session_id: &str,
-    state: SessionState,
-) -> Result<()> {
-    let mut db = load_db_from(path)?;
-    let session = db
-        .sessions
-        .iter_mut()
-        .find(|s| s.claude_session_id.as_deref() == Some(claude_session_id))
-        .ok_or_else(|| eyre!("No session with claude_session_id '{}'", claude_session_id))?;
-    session.state = state;
-    save_db_to(path, &db)?;
-    Ok(())
-}
-
-/// Update the tmux session ID for a session looked up by tmux session name.
-pub fn update_tmux_session_id(tmux_session_name: &str, tmux_session_id: &str) -> Result<()> {
-    let path = default_db_path()?;
-    update_tmux_session_id_at(&path, tmux_session_name, tmux_session_id)
-}
-
-fn update_tmux_session_id_at(
-    path: &Path,
-    tmux_session_name: &str,
-    tmux_session_id: &str,
-) -> Result<()> {
-    let mut db = load_db_from(path)?;
-    let session = db
-        .sessions
-        .iter_mut()
-        .find(|s| s.tmux_session_name == tmux_session_name)
-        .ok_or_else(|| eyre!("No session with tmux_session_name '{}'", tmux_session_name))?;
-    session.tmux_session_id = tmux_session_id.to_string();
-    save_db_to(path, &db)?;
-    Ok(())
-}
-
-/// Add a new session record and persist to disk.
-pub fn add_session(
-    tmux_session_id: String,
-    tmux_session_name: String,
-    claude_session_id: String,
-    directory: String,
-    claude_command: String,
-    model_id: Option<String>,
-) -> Result<SessionRecord> {
-    let path = default_db_path()?;
-    add_session_to(
-        &path,
-        tmux_session_id,
-        tmux_session_name,
-        Some(claude_session_id),
-        directory,
-        claude_command,
-        model_id,
-    )
-}
-
-/// Add a plain tmux session record (no Claude) and persist to disk.
-pub fn add_plain_session(
-    tmux_session_id: String,
-    tmux_session_name: String,
-    directory: String,
-) -> Result<SessionRecord> {
-    let path = default_db_path()?;
-    add_session_to(
-        &path,
-        tmux_session_id,
-        tmux_session_name,
-        None,
-        directory,
-        "claude".to_string(),
-        None,
-    )
-}
-
-fn add_session_to(
-    path: &Path,
-    tmux_session_id: String,
-    tmux_session_name: String,
-    claude_session_id: Option<String>,
-    directory: String,
-    claude_command: String,
-    model_id: Option<String>,
-) -> Result<SessionRecord> {
-    let mut db = load_db_from(path)?;
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let directory = {
-        let t = directory.trim_end_matches('/');
-        if t.is_empty() {
-            "/".to_string()
-        } else {
-            t.to_string()
-        }
-    };
-
-    let record = SessionRecord {
-        tmux_session_id,
-        tmux_session_name,
-        claude_session_id,
-        directory,
-        created_at,
-        state: SessionState::Idle,
-        claude_command,
-        model_id,
-    };
-
-    db.sessions.push(record.clone());
-    save_db_to(path, &db)?;
-    Ok(record)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_db_path() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("sessions.json");
         (tmp, path)
+    }
+
+    fn make_record(name: &str, claude_id: Option<&str>) -> SessionRecord {
+        SessionRecord {
+            tmux_session_id: "$1".to_string(),
+            tmux_session_name: name.to_string(),
+            claude_session_id: claude_id.map(str::to_string),
+            directory: "/tmp".to_string(),
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            state: SessionState::Idle,
+            claude_command: "claude".to_string(),
+            model_id: None,
+        }
+    }
+
+    #[test]
+    fn test_open_creates_file_when_missing() {
+        let (_tmp, path) = temp_db_path();
+        assert!(!path.exists());
+        let db = SessionDb::open(&path).unwrap();
+        assert!(db.sessions.is_empty());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_save_and_reload() {
+        let (_tmp, path) = temp_db_path();
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            db.sessions.push(make_record("test", Some("uuid-1")));
+            db.save().unwrap();
+        }
+        let db = SessionDb::open(&path).unwrap();
+        assert_eq!(db.sessions.len(), 1);
+        assert_eq!(db.sessions[0].tmux_session_name, "test");
+    }
+
+    #[test]
+    fn test_add_session() {
+        let (_tmp, path) = temp_db_path();
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            db.sessions.push(make_record("first", Some("uuid-first")));
+            db.sessions.push(make_record("second", Some("uuid-second")));
+            db.save().unwrap();
+        }
+        let db = SessionDb::open(&path).unwrap();
+        assert_eq!(db.sessions.len(), 2);
+    }
+
+    #[test]
+    fn test_remove_session() {
+        let (_tmp, path) = temp_db_path();
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            db.sessions.push(make_record("first", Some("uuid-first")));
+            db.sessions.push(make_record("second", Some("uuid-second")));
+            db.save().unwrap();
+        }
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            db.sessions.retain(|s| s.tmux_session_name != "first");
+            db.save().unwrap();
+        }
+        let db = SessionDb::open(&path).unwrap();
+        assert_eq!(db.sessions.len(), 1);
+        assert_eq!(db.sessions[0].tmux_session_name, "second");
+    }
+
+    #[test]
+    fn test_update_session_state() {
+        let (_tmp, path) = temp_db_path();
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            db.sessions.push(make_record("my-session", Some("uuid-1")));
+            db.save().unwrap();
+        }
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            let s = db
+                .sessions
+                .iter_mut()
+                .find(|s| s.claude_session_id.as_deref() == Some("uuid-1"))
+                .unwrap();
+            s.state = SessionState::Working;
+            db.save().unwrap();
+        }
+        let db = SessionDb::open(&path).unwrap();
+        assert_eq!(db.sessions[0].state, SessionState::Working);
+    }
+
+    #[test]
+    fn test_update_tmux_session_id() {
+        let (_tmp, path) = temp_db_path();
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            let mut r = make_record("my-session", Some("uuid-1"));
+            r.tmux_session_id = String::new();
+            db.sessions.push(r);
+            db.save().unwrap();
+        }
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            let s = db
+                .sessions
+                .iter_mut()
+                .find(|s| s.tmux_session_name == "my-session")
+                .unwrap();
+            s.tmux_session_id = "$42".to_string();
+            db.save().unwrap();
+        }
+        let db = SessionDb::open(&path).unwrap();
+        assert_eq!(db.sessions[0].tmux_session_id, "$42");
+    }
+
+    #[test]
+    fn test_open_normalizes_trailing_slash() {
+        let (_tmp, path) = temp_db_path();
+        let json = r#"{"sessions":[{
+            "tmux_session_id": "$1",
+            "tmux_session_name": "nous",
+            "claude_session_id": null,
+            "directory": "/home/user/code/nous/",
+            "created_at": 100,
+            "state": "Idle",
+            "claude_command": "claude"
+        }]}"#;
+        std::fs::write(&path, json).unwrap();
+        let db = SessionDb::open(&path).unwrap();
+        assert_eq!(db.sessions[0].directory, "/home/user/code/nous");
+    }
+
+    #[test]
+    fn test_open_preserves_root_slash() {
+        let (_tmp, path) = temp_db_path();
+        let json = r#"{"sessions":[{
+            "tmux_session_id": "$1",
+            "tmux_session_name": "root",
+            "claude_session_id": null,
+            "directory": "/",
+            "created_at": 100,
+            "state": "Idle",
+            "claude_command": "claude"
+        }]}"#;
+        std::fs::write(&path, json).unwrap();
+        let db = SessionDb::open(&path).unwrap();
+        assert_eq!(db.sessions[0].directory, "/");
     }
 
     #[test]
@@ -269,270 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn test_session_db_roundtrip() {
-        let db = SessionDb {
-            sessions: vec![SessionRecord {
-                tmux_session_id: "$1".to_string(),
-                tmux_session_name: "test".to_string(),
-                claude_session_id: Some("sess-123".to_string()),
-                directory: "/home/user".to_string(),
-                created_at: 1700000000,
-                state: SessionState::Idle,
-                claude_command: "claude".to_string(),
-                model_id: None,
-            }],
-        };
-        let json = serde_json::to_string_pretty(&db).unwrap();
-        let deserialized: SessionDb = serde_json::from_str(&json).unwrap();
-        assert_eq!(db.sessions.len(), deserialized.sessions.len());
-        assert_eq!(db.sessions[0], deserialized.sessions[0]);
-    }
-
-    #[test]
-    fn test_load_db_empty_when_no_file() {
-        let (_tmp, path) = temp_db_path();
-        let db = load_db_from(&path).unwrap();
-        assert!(db.sessions.is_empty());
-    }
-
-    #[test]
-    fn test_add_session_creates_file() {
-        let (_tmp, path) = temp_db_path();
-        let record = add_session_to(
-            &path,
-            "$1".to_string(),
-            "test-session".to_string(),
-            Some("test-uuid-123".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(record.tmux_session_name, "test-session");
-        assert!(record.created_at > 0);
-        assert_eq!(record.claude_session_id, Some("test-uuid-123".to_string()));
-
-        // Verify persistence
-        let db = load_db_from(&path).unwrap();
-        assert_eq!(db.sessions.len(), 1);
-        assert_eq!(db.sessions[0].tmux_session_name, "test-session");
-    }
-
-    #[test]
-    fn test_add_multiple_sessions() {
-        let (_tmp, path) = temp_db_path();
-        add_session_to(
-            &path,
-            "$1".to_string(),
-            "first".to_string(),
-            Some("uuid-first".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-        add_session_to(
-            &path,
-            "$2".to_string(),
-            "second".to_string(),
-            Some("uuid-second".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-
-        let db = load_db_from(&path).unwrap();
-        assert_eq!(db.sessions.len(), 2);
-    }
-
-    #[test]
-    fn test_list_sessions_from() {
-        let (_tmp, path) = temp_db_path();
-        add_session_to(
-            &path,
-            "$1".to_string(),
-            "first".to_string(),
-            Some("uuid-first".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-        add_session_to(
-            &path,
-            "$2".to_string(),
-            "second".to_string(),
-            Some("uuid-second".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].tmux_session_name, "first");
-        assert_eq!(sessions[1].tmux_session_name, "second");
-    }
-
-    #[test]
-    fn test_list_sessions_empty() {
-        let (_tmp, path) = temp_db_path();
-        let sessions = list_sessions_from(&path).unwrap();
-        assert!(sessions.is_empty());
-    }
-
-    #[test]
-    fn test_remove_session() {
-        let (_tmp, path) = temp_db_path();
-        add_session_to(
-            &path,
-            "$1".to_string(),
-            "first".to_string(),
-            Some("uuid-first".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-        add_session_to(
-            &path,
-            "$2".to_string(),
-            "second".to_string(),
-            Some("uuid-second".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-
-        remove_session_from(&path, "first").unwrap();
-
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].tmux_session_name, "second");
-    }
-
-    #[test]
-    fn test_remove_nonexistent_session() {
-        let (_tmp, path) = temp_db_path();
-        add_session_to(
-            &path,
-            "$1".to_string(),
-            "first".to_string(),
-            Some("uuid-first".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-
-        remove_session_from(&path, "nonexistent").unwrap();
-
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions.len(), 1);
-    }
-
-    #[test]
-    fn test_save_and_load_roundtrip() {
-        let (_tmp, path) = temp_db_path();
-        let db = SessionDb {
-            sessions: vec![SessionRecord {
-                tmux_session_id: "$5".to_string(),
-                tmux_session_name: "roundtrip".to_string(),
-                claude_session_id: None,
-                directory: "/home".to_string(),
-                created_at: 999,
-                state: SessionState::Working,
-                claude_command: "claude".to_string(),
-                model_id: None,
-            }],
-        };
-        save_db_to(&path, &db).unwrap();
-        let loaded = load_db_from(&path).unwrap();
-        assert_eq!(loaded.sessions.len(), 1);
-        assert_eq!(loaded.sessions[0], db.sessions[0]);
-    }
-
-    #[test]
-    fn test_update_session_state() {
-        let (_tmp, path) = temp_db_path();
-        add_session_to(
-            &path,
-            "$1".to_string(),
-            "my-session".to_string(),
-            Some("uuid-1".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-
-        // Default state is Idle
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions[0].state, SessionState::Idle);
-
-        // Update to Working (lookup by claude_session_id)
-        update_state_by_claude_session_at(&path, "uuid-1", SessionState::Working).unwrap();
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions[0].state, SessionState::Working);
-
-        // Update to WaitingUser
-        update_state_by_claude_session_at(&path, "uuid-1", SessionState::WaitingUser).unwrap();
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions[0].state, SessionState::WaitingUser);
-    }
-
-    #[test]
-    fn test_update_session_state_not_found() {
-        let (_tmp, path) = temp_db_path();
-        let result = update_state_by_claude_session_at(&path, "nonexistent", SessionState::Working);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_session_state_display() {
-        assert_eq!(SessionState::Working.to_string(), "Working");
-        assert_eq!(SessionState::WaitingUser.to_string(), "Waiting User");
-        assert_eq!(SessionState::Idle.to_string(), "Idle");
-    }
-
-    #[test]
-    fn test_update_tmux_session_id() {
-        let (_tmp, path) = temp_db_path();
-        add_session_to(
-            &path,
-            "".to_string(),
-            "my-session".to_string(),
-            Some("uuid-1".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-
-        // Initially empty
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions[0].tmux_session_id, "");
-
-        // Update to real tmux session ID
-        update_tmux_session_id_at(&path, "my-session", "$42").unwrap();
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions[0].tmux_session_id, "$42");
-    }
-
-    #[test]
-    fn test_update_tmux_session_id_not_found() {
-        let (_tmp, path) = temp_db_path();
-        let result = update_tmux_session_id_at(&path, "nonexistent", "$1");
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_state_defaults_to_idle_on_deserialize() {
-        // Simulate a legacy record without a state field
         let json = r#"{
             "tmux_session_id": "$1",
             "tmux_session_name": "legacy",
@@ -546,7 +318,6 @@ mod tests {
 
     #[test]
     fn test_claude_command_defaults_on_deserialize() {
-        // Simulate a legacy record without claude_command field
         let json = r#"{
             "tmux_session_id": "$1",
             "tmux_session_name": "legacy",
@@ -560,7 +331,6 @@ mod tests {
 
     #[test]
     fn test_model_id_defaults_to_none_on_deserialize() {
-        // Legacy record without model_id should deserialize with None
         let json = r#"{
             "tmux_session_id": "$1",
             "tmux_session_name": "legacy",
@@ -573,89 +343,26 @@ mod tests {
     }
 
     #[test]
-    fn test_session_record_with_model_id_roundtrip() {
-        let (_tmp, path) = temp_db_path();
-        let record = add_session_to(
-            &path,
-            "$1".to_string(),
-            "model-session".to_string(),
-            Some("uuid-123".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            Some("claude-sonnet-4-6".to_string()),
-        )
-        .unwrap();
-
-        assert_eq!(record.model_id, Some("claude-sonnet-4-6".to_string()));
-
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions[0].model_id, Some("claude-sonnet-4-6".to_string()));
+    fn test_session_state_display() {
+        assert_eq!(SessionState::Working.to_string(), "Working");
+        assert_eq!(SessionState::WaitingUser.to_string(), "Waiting User");
+        assert_eq!(SessionState::Idle.to_string(), "Idle");
     }
 
     #[test]
-    fn test_add_session_with_none_model_id() {
+    fn test_model_id_roundtrip() {
         let (_tmp, path) = temp_db_path();
-        let record = add_session_to(
-            &path,
-            "$1".to_string(),
-            "no-model-session".to_string(),
-            Some("uuid-456".to_string()),
-            "/tmp".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(record.model_id, None);
-    }
-
-    #[test]
-    fn test_add_session_strips_trailing_slash() {
-        let (_tmp, path) = temp_db_path();
-        let record = add_session_to(
-            &path,
-            "$1".to_string(),
-            "slash-session".to_string(),
-            None,
-            "/home/user/code/nous/".to_string(),
-            "claude".to_string(),
-            None,
-        )
-        .unwrap();
-        assert_eq!(record.directory, "/home/user/code/nous");
-    }
-
-    #[test]
-    fn test_load_db_normalizes_existing_trailing_slash() {
-        let (_tmp, path) = temp_db_path();
-        let json = r#"{"sessions":[{
-            "tmux_session_id": "$1",
-            "tmux_session_name": "nous",
-            "claude_session_id": null,
-            "directory": "/home/user/code/nous/",
-            "created_at": 100,
-            "state": "Idle",
-            "claude_command": "claude"
-        }]}"#;
-        fs::write(&path, json).unwrap();
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions[0].directory, "/home/user/code/nous");
-    }
-
-    #[test]
-    fn test_load_db_preserves_root_slash() {
-        let (_tmp, path) = temp_db_path();
-        let json = r#"{"sessions":[{
-            "tmux_session_id": "$1",
-            "tmux_session_name": "root",
-            "claude_session_id": null,
-            "directory": "/",
-            "created_at": 100,
-            "state": "Idle",
-            "claude_command": "claude"
-        }]}"#;
-        fs::write(&path, json).unwrap();
-        let sessions = list_sessions_from(&path).unwrap();
-        assert_eq!(sessions[0].directory, "/");
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            let mut r = make_record("model-session", Some("uuid-123"));
+            r.model_id = Some("claude-sonnet-4-6".to_string());
+            db.sessions.push(r);
+            db.save().unwrap();
+        }
+        let db = SessionDb::open(&path).unwrap();
+        assert_eq!(
+            db.sessions[0].model_id,
+            Some("claude-sonnet-4-6".to_string())
+        );
     }
 }

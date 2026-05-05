@@ -1,27 +1,35 @@
 use color_eyre::{Result, eyre::eyre};
 use std::process::Command;
 
+use crate::session_launcher::GitUndo;
+
 /// Prepare a branch in the given directory: stash if dirty, create/checkout branch, sync with origin.
-pub fn prepare_branch(directory: &str, branch_name: &str) -> Result<()> {
+/// Returns a `GitUndo` describing how to reverse the checkout on failure.
+pub fn prepare_branch(directory: &str, branch_name: &str) -> Result<GitUndo> {
+    let original = current_branch(directory)?;
     stash_if_dirty(directory, &format!("switching to {branch_name}"))?;
 
-    // Check if the branch exists locally
     let local_exists = branch_exists_locally(directory, branch_name)?;
 
     if local_exists {
         run_git(directory, &["checkout", branch_name])?;
+        Ok(GitUndo::CheckoutBranch(original))
     } else {
         run_git(directory, &["checkout", "-b", branch_name])?;
+        sync_with_origin(directory, branch_name);
+        Ok(GitUndo::CheckoutAndDeleteBranch {
+            original,
+            created: branch_name.to_string(),
+        })
     }
-
-    sync_with_origin(directory, branch_name);
-
-    Ok(())
 }
 
 /// Prepare the repo for worktree creation: stash if dirty, checkout main, and pull latest.
 /// Calls `on_step` with a message for each step so the UI can show progress.
-pub fn prepare_worktree(directory: &str, on_step: impl Fn(&str)) -> Result<()> {
+/// Returns a `GitUndo` describing how to reverse the checkout on failure.
+pub fn prepare_worktree(directory: &str, on_step: &dyn Fn(&str)) -> Result<GitUndo> {
+    let original = current_branch(directory)?;
+
     on_step("Detecting main branch...");
     let main_branch = detect_main_branch(directory)?;
 
@@ -37,6 +45,21 @@ pub fn prepare_worktree(directory: &str, on_step: impl Fn(&str)) -> Result<()> {
     on_step(&format!("Pulling latest from origin/{main_branch}..."));
     run_git(directory, &["pull", "origin", &main_branch])?;
 
+    Ok(GitUndo::CheckoutBranch(original))
+}
+
+/// Reverse the git state changes described by `undo`.
+pub fn undo(directory: &str, undo: GitUndo) -> Result<()> {
+    match undo {
+        GitUndo::CheckoutBranch(branch) => {
+            run_git(directory, &["checkout", &branch])?;
+        }
+        GitUndo::CheckoutAndDeleteBranch { original, created } => {
+            run_git(directory, &["checkout", &original])?;
+            run_git(directory, &["branch", "-D", &created])?;
+        }
+        GitUndo::Nothing => {}
+    }
     Ok(())
 }
 
@@ -122,6 +145,17 @@ fn detect_main_branch(directory: &str) -> Result<String> {
     Err(eyre!(
         "Could not detect main branch: no origin/HEAD, 'main', or 'master' branch found"
     ))
+}
+
+fn current_branch(directory: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(directory)
+        .output()?;
+    if !output.status.success() {
+        return Err(eyre!("Failed to get current branch"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn has_uncommitted_changes(directory: &str) -> Result<bool> {
@@ -411,7 +445,7 @@ mod tests {
         add_origin(tmp.path(), bare.path());
         let dir = tmp.path().to_str().unwrap();
 
-        prepare_worktree(dir, |_| {}).unwrap();
+        prepare_worktree(dir, &|_| {}).unwrap();
 
         assert_eq!(current_branch(tmp.path()), "main");
         assert!(!has_uncommitted_changes(dir).unwrap());
@@ -433,7 +467,7 @@ mod tests {
             .unwrap();
         assert_eq!(current_branch(tmp.path()), "feature-x");
 
-        prepare_worktree(dir, |_| {}).unwrap();
+        prepare_worktree(dir, &|_| {}).unwrap();
 
         assert_eq!(current_branch(tmp.path()), "main");
     }
@@ -450,7 +484,7 @@ mod tests {
         std::fs::write(tmp.path().join("README.md"), "modified").unwrap();
         assert!(has_uncommitted_changes(dir).unwrap());
 
-        prepare_worktree(dir, |_| {}).unwrap();
+        prepare_worktree(dir, &|_| {}).unwrap();
 
         // Changes should be stashed
         assert!(!has_uncommitted_changes(dir).unwrap());
@@ -482,7 +516,7 @@ mod tests {
         assert_eq!(current_branch(tmp.path()), "feature-y");
         assert!(has_uncommitted_changes(dir).unwrap());
 
-        prepare_worktree(dir, |_| {}).unwrap();
+        prepare_worktree(dir, &|_| {}).unwrap();
 
         // Should be on main with clean working tree
         assert_eq!(current_branch(tmp.path()), "main");
@@ -546,7 +580,7 @@ mod tests {
         // The local repo should NOT have upstream.txt yet
         assert!(!tmp.path().join("upstream.txt").exists());
 
-        prepare_worktree(dir, |_| {}).unwrap();
+        prepare_worktree(dir, &|_| {}).unwrap();
 
         // After prepare_worktree, the upstream commit should be pulled
         assert!(tmp.path().join("upstream.txt").exists());

@@ -10,11 +10,8 @@ use std::path::Path;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::{git, recent_dirs, theme};
+use crate::{autocomplete::{BranchCompleter, DirCompleter}, recent_dirs, theme};
 
-/// Break text into lines of at most `width` characters (character-level wrapping).
-/// Returns a Vec of line strings. This matches the cursor math which uses
-/// `visual_cursor % width` and `visual_cursor / width`.
 fn char_wrap_lines(text: &str, width: usize) -> Vec<String> {
     if width == 0 || text.is_empty() {
         return vec![text.to_string()];
@@ -23,103 +20,106 @@ fn char_wrap_lines(text: &str, width: usize) -> Vec<String> {
     chars.chunks(width).map(|c| c.iter().collect()).collect()
 }
 
-/// Compute directory tab-completion for a given input path.
-/// Returns the completed path if there's a unique or common-prefix completion,
-/// along with the full suggestion text (for ghost display).
-/// Returns None if no completions are found.
-pub fn complete_path(input: &str) -> Option<(String, Option<String>)> {
-    if input.is_empty() {
-        return None;
-    }
-
-    let path = Path::new(input);
-
-    // If input ends with '/' and is a directory, list its children
-    let (parent, prefix) = if input.ends_with('/') && path.is_dir() {
-        (path.to_path_buf(), "")
-    } else {
-        let parent = path.parent()?;
-        let file_name = path.file_name()?.to_str()?;
-        (parent.to_path_buf(), file_name)
-    };
-
-    let entries = std::fs::read_dir(&parent).ok()?;
-    let mut matches: Vec<String> = Vec::new();
-
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with(prefix) {
-            // Only complete to directories
-            if entry.path().is_dir() {
-                matches.push(name_str.to_string());
-            }
-        }
-    }
-
-    if matches.is_empty() {
-        return None;
-    }
-
-    matches.sort();
-
-    // Find longest common prefix among matches
-    let common = longest_common_prefix(&matches);
-
-    let completed = if input.ends_with('/') || prefix.is_empty() {
-        format!("{}{}", parent.display(), std::path::MAIN_SEPARATOR)
-            + &common
-            + if matches.len() == 1 {
-                std::str::from_utf8(&[std::path::MAIN_SEPARATOR as u8]).unwrap_or("/")
-            } else {
-                ""
-            }
-    } else {
-        let parent_str = parent.display().to_string();
-        let sep = if parent_str.ends_with('/') { "" } else { "/" };
-        format!(
-            "{}{}{}{}",
-            parent_str,
-            sep,
-            common,
-            if matches.len() == 1 { "/" } else { "" }
-        )
-    };
-
-    // Ghost suggestion: show the first match fully if there are multiple
-    let suggestion = if matches.len() > 1 {
-        Some(matches[0].clone())
-    } else {
-        None
-    };
-
-    if completed == input {
-        // No progress made — show first match as suggestion
-        if matches.len() > 1 {
-            return Some((completed, Some(matches[0].clone())));
-        }
-        return None;
-    }
-
-    Some((completed, suggestion))
+#[derive(Debug)]
+pub struct Dropdown {
+    pub items: Vec<String>,
+    pub selected: Option<usize>,
+    pub scroll: usize,
+    pub visible: bool,
+    pub query: String,
 }
 
-fn longest_common_prefix(strings: &[String]) -> String {
-    if strings.is_empty() {
-        return String::new();
-    }
-    let first = &strings[0];
-    let mut len = first.len();
-    for s in &strings[1..] {
-        len = len.min(s.len());
-        for (i, (a, b)) in first.chars().zip(s.chars()).enumerate() {
-            if a != b {
-                len = len.min(i);
-                break;
-            }
+impl Dropdown {
+    fn new() -> Self {
+        Dropdown {
+            items: Vec::new(),
+            selected: None,
+            scroll: 0,
+            visible: false,
+            query: String::new(),
         }
     }
-    first[..len].to_string()
+
+    pub fn filtered(&self) -> Vec<&str> {
+        if self.query.is_empty() {
+            self.items.iter().map(|s| s.as_str()).collect()
+        } else {
+            let q = self.query.to_lowercase();
+            self.items
+                .iter()
+                .filter(|s| s.to_lowercase().contains(&q))
+                .map(|s| s.as_str())
+                .collect()
+        }
+    }
+
+    pub fn open(&mut self, items: Vec<String>) {
+        self.items = items;
+        self.selected = if self.items.is_empty() { None } else { Some(0) };
+        self.scroll = 0;
+        self.visible = true;
+        self.query.clear();
+    }
+
+    pub fn close(&mut self) {
+        self.visible = false;
+        self.selected = None;
+        self.scroll = 0;
+        self.query.clear();
+    }
+
+    pub fn selected_value(&self) -> Option<&str> {
+        self.selected
+            .and_then(|i| self.filtered().into_iter().nth(i))
+    }
+
+    pub fn select_next(&mut self, visible_count: usize) {
+        let n = self.filtered().len();
+        if n > 0 {
+            self.selected = Some(match self.selected {
+                Some(i) if i < n - 1 => i + 1,
+                _ => 0,
+            });
+        }
+        self.adjust_scroll(visible_count);
+    }
+
+    pub fn select_prev(&mut self, visible_count: usize) {
+        let n = self.filtered().len();
+        if n > 0 {
+            self.selected = Some(match self.selected {
+                Some(i) if i > 0 => i - 1,
+                _ => n - 1,
+            });
+        }
+        self.adjust_scroll(visible_count);
+    }
+
+    fn adjust_scroll(&mut self, visible_count: usize) {
+        if let Some(sel) = self.selected {
+            if sel < self.scroll {
+                self.scroll = sel;
+            } else if sel >= self.scroll + visible_count {
+                self.scroll = sel + 1 - visible_count;
+            }
+        } else {
+            self.scroll = 0;
+        }
+    }
+
+    pub fn push_query_char(&mut self, c: char) {
+        self.query.push(c);
+        let n = self.filtered().len();
+        self.selected = if n > 0 { Some(0) } else { None };
+        self.scroll = 0;
+    }
+
+    pub fn pop_query_char(&mut self) {
+        self.query.pop();
+        let n = self.filtered().len();
+        self.selected = if n > 0 { Some(0) } else { None };
+        self.scroll = 0;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,16 +236,8 @@ pub struct App {
     pub dir_suggestion: Option<String>,
     pub branch_suggestion: Option<String>,
     pub error_message: Option<String>,
-    pub recent_dirs: Vec<String>,
-    pub recent_dir_selected: Option<usize>,
-    pub recent_dir_scroll: usize,
-    pub show_recent_dirs: bool,
-    pub recent_dir_query: String,
-    pub show_branches: bool,
-    pub branch_list_items: Vec<String>,
-    pub branch_list_selected: Option<usize>,
-    pub branch_list_scroll: usize,
-    pub branch_list_query: String,
+    pub recent_dirs_dropdown: Dropdown,
+    pub branch_dropdown: Dropdown,
 }
 
 impl App {
@@ -278,6 +270,9 @@ impl App {
             .map(ModelSelection::from_model_id)
             .unwrap_or_default();
 
+        let mut recent_dirs_dropdown = Dropdown::new();
+        recent_dirs_dropdown.items = recent_dirs;
+
         Self {
             running: true,
             form_mode,
@@ -292,16 +287,8 @@ impl App {
             dir_suggestion: None,
             branch_suggestion: None,
             error_message: None,
-            recent_dirs,
-            recent_dir_selected: None,
-            recent_dir_scroll: 0,
-            show_recent_dirs: false,
-            recent_dir_query: String::new(),
-            show_branches: false,
-            branch_list_items: Vec::new(),
-            branch_list_selected: None,
-            branch_list_scroll: 0,
-            branch_list_query: String::new(),
+            recent_dirs_dropdown,
+            branch_dropdown: Dropdown::new(),
         }
     }
 
@@ -310,13 +297,11 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
-        // Handle recent dirs dropdown navigation
-        if self.show_recent_dirs {
+        if self.recent_dirs_dropdown.visible {
             return self.handle_recent_dirs_key(key);
         }
 
-        // Handle branch list dropdown navigation
-        if self.show_branches {
+        if self.branch_dropdown.visible {
             return self.handle_branch_list_key(key);
         }
 
@@ -426,12 +411,10 @@ impl App {
                     && key
                         .modifiers
                         .contains(crossterm::event::KeyModifiers::CONTROL)
-                    && !self.recent_dirs.is_empty()
+                    && !self.recent_dirs_dropdown.items.is_empty()
                 {
-                    self.show_recent_dirs = true;
-                    self.recent_dir_selected = Some(0);
-                    self.recent_dir_scroll = 0;
-                    self.recent_dir_query.clear();
+                    let items = self.recent_dirs_dropdown.items.clone();
+                    self.recent_dirs_dropdown.open(items);
                     return Action::None;
                 }
 
@@ -443,13 +426,9 @@ impl App {
                         .contains(crossterm::event::KeyModifiers::CONTROL)
                 {
                     let dir = self.dir_input.value().to_string();
-                    let branches = git::get_local_branches(&dir);
+                    let branches = crate::git::get_local_branches(&dir);
                     if !branches.is_empty() {
-                        self.branch_list_items = branches;
-                        self.branch_list_selected = Some(0);
-                        self.branch_list_scroll = 0;
-                        self.branch_list_query.clear();
-                        self.show_branches = true;
+                        self.branch_dropdown.open(branches);
                     }
                     return Action::None;
                 }
@@ -497,70 +476,24 @@ impl App {
         }
     }
 
-    /// Maximum number of items visible in the recent-dirs dropdown.
-    const RECENT_DIRS_VISIBLE: usize = 10;
-
-    fn filtered_recent_dirs(&self) -> Vec<&str> {
-        if self.recent_dir_query.is_empty() {
-            self.recent_dirs.iter().map(|s| s.as_str()).collect()
-        } else {
-            let q = self.recent_dir_query.to_lowercase();
-            self.recent_dirs
-                .iter()
-                .filter(|d| d.to_lowercase().contains(&q))
-                .map(|s| s.as_str())
-                .collect()
-        }
-    }
-
-    fn adjust_recent_dir_scroll(&mut self) {
-        if let Some(sel) = self.recent_dir_selected {
-            let visible = Self::RECENT_DIRS_VISIBLE;
-            if sel < self.recent_dir_scroll {
-                self.recent_dir_scroll = sel;
-            } else if sel >= self.recent_dir_scroll + visible {
-                self.recent_dir_scroll = sel + 1 - visible;
-            }
-        } else {
-            self.recent_dir_scroll = 0;
-        }
-    }
+    const DROPDOWN_VISIBLE: usize = 10;
 
     fn handle_recent_dirs_key(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
-                self.show_recent_dirs = false;
-                self.recent_dir_selected = None;
-                self.recent_dir_scroll = 0;
-                self.recent_dir_query.clear();
+                self.recent_dirs_dropdown.close();
                 Action::None
             }
             KeyCode::Up | KeyCode::BackTab => {
-                let n = self.filtered_recent_dirs().len();
-                if n > 0 {
-                    self.recent_dir_selected = Some(match self.recent_dir_selected {
-                        Some(i) if i > 0 => i - 1,
-                        _ => n - 1,
-                    });
-                }
-                self.adjust_recent_dir_scroll();
+                self.recent_dirs_dropdown.select_prev(Self::DROPDOWN_VISIBLE);
                 Action::None
             }
             KeyCode::Down | KeyCode::Tab => {
-                let n = self.filtered_recent_dirs().len();
-                if n > 0 {
-                    self.recent_dir_selected = Some(match self.recent_dir_selected {
-                        Some(i) if i < n - 1 => i + 1,
-                        _ => 0,
-                    });
-                }
-                self.adjust_recent_dir_scroll();
+                self.recent_dirs_dropdown.select_next(Self::DROPDOWN_VISIBLE);
                 Action::None
             }
             KeyCode::Enter => {
-                let selected = self
-                    .recent_dir_selected
-                    .and_then(|i| self.filtered_recent_dirs().get(i).map(|s| s.to_string()));
+                let selected = self.recent_dirs_dropdown.selected_value().map(|s| s.to_string());
                 if let Some(dir) = selected {
                     self.dir_input = Input::new(dir.clone());
                     for _ in 0..dir.len() {
@@ -572,97 +505,39 @@ impl App {
                     }
                     self.update_dir_suggestion();
                 }
-                self.show_recent_dirs = false;
-                self.recent_dir_selected = None;
-                self.recent_dir_scroll = 0;
-                self.recent_dir_query.clear();
+                self.recent_dirs_dropdown.close();
                 Action::None
             }
             KeyCode::Backspace => {
-                self.recent_dir_query.pop();
-                let n = self.filtered_recent_dirs().len();
-                self.recent_dir_selected = if n > 0 { Some(0) } else { None };
-                self.recent_dir_scroll = 0;
+                self.recent_dirs_dropdown.pop_query_char();
                 Action::None
             }
             KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
-                self.recent_dir_query.push(c);
-                let n = self.filtered_recent_dirs().len();
-                self.recent_dir_selected = if n > 0 { Some(0) } else { None };
-                self.recent_dir_scroll = 0;
+                self.recent_dirs_dropdown.push_query_char(c);
                 Action::None
             }
             _ => Action::None,
         }
     }
 
-    const BRANCH_LIST_VISIBLE: usize = 10;
-
-    fn filtered_branches(&self) -> Vec<&str> {
-        if self.branch_list_query.is_empty() {
-            self.branch_list_items.iter().map(|s| s.as_str()).collect()
-        } else {
-            let q = self.branch_list_query.to_lowercase();
-            self.branch_list_items
-                .iter()
-                .filter(|b| b.to_lowercase().contains(&q))
-                .map(|s| s.as_str())
-                .collect()
-        }
-    }
-
-    fn adjust_branch_list_scroll(&mut self) {
-        if let Some(sel) = self.branch_list_selected {
-            let visible = Self::BRANCH_LIST_VISIBLE;
-            if sel < self.branch_list_scroll {
-                self.branch_list_scroll = sel;
-            } else if sel >= self.branch_list_scroll + visible {
-                self.branch_list_scroll = sel + 1 - visible;
-            }
-        } else {
-            self.branch_list_scroll = 0;
-        }
-    }
-
     fn handle_branch_list_key(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
-                self.show_branches = false;
-                self.branch_list_selected = None;
-                self.branch_list_scroll = 0;
-                self.branch_list_query.clear();
+                self.branch_dropdown.close();
                 Action::None
             }
             KeyCode::Up | KeyCode::BackTab => {
-                let n = self.filtered_branches().len();
-                if n > 0 {
-                    self.branch_list_selected = Some(match self.branch_list_selected {
-                        Some(i) if i > 0 => i - 1,
-                        _ => n - 1,
-                    });
-                }
-                self.adjust_branch_list_scroll();
+                self.branch_dropdown.select_prev(Self::DROPDOWN_VISIBLE);
                 Action::None
             }
             KeyCode::Down | KeyCode::Tab => {
-                let n = self.filtered_branches().len();
-                if n > 0 {
-                    self.branch_list_selected = Some(match self.branch_list_selected {
-                        Some(i) if i < n - 1 => i + 1,
-                        _ => 0,
-                    });
-                }
-                self.adjust_branch_list_scroll();
+                self.branch_dropdown.select_next(Self::DROPDOWN_VISIBLE);
                 Action::None
             }
             KeyCode::Enter => {
-                let selected = self
-                    .branch_list_selected
-                    .and_then(|i| self.filtered_branches().get(i).map(|s| s.to_string()));
+                let selected = self.branch_dropdown.selected_value().map(|s| s.to_string());
                 if let Some(branch) = selected {
                     self.branch_name_input = Input::new(branch.clone());
                     for _ in 0..branch.len() {
@@ -674,28 +549,17 @@ impl App {
                     }
                     self.update_branch_suggestion();
                 }
-                self.show_branches = false;
-                self.branch_list_selected = None;
-                self.branch_list_scroll = 0;
-                self.branch_list_query.clear();
+                self.branch_dropdown.close();
                 Action::None
             }
             KeyCode::Backspace => {
-                self.branch_list_query.pop();
-                let n = self.filtered_branches().len();
-                self.branch_list_selected = if n > 0 { Some(0) } else { None };
-                self.branch_list_scroll = 0;
+                self.branch_dropdown.pop_query_char();
                 Action::None
             }
             KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
-                self.branch_list_query.push(c);
-                let n = self.filtered_branches().len();
-                self.branch_list_selected = if n > 0 { Some(0) } else { None };
-                self.branch_list_scroll = 0;
+                self.branch_dropdown.push_query_char(c);
                 Action::None
             }
             _ => Action::None,
@@ -706,17 +570,14 @@ impl App {
         self.dir_input.visual_cursor() >= self.dir_input.value().len()
     }
 
-    /// Attempt to complete the directory input. Returns true if progress was made
-    /// (input changed), false if no progress (e.g. already at a fully-expanded path).
     fn complete_directory(&mut self) -> bool {
         let current = self.dir_input.value().to_string();
-        if let Some((completed, _suggestion)) = complete_path(&current) {
+        if let Some(completed) = DirCompleter.complete(&current) {
             if completed == current {
                 return false;
             }
-            self.dir_input = Input::new(completed.clone());
-            // Move cursor to end
             let len = completed.len();
+            self.dir_input = Input::new(completed);
             for _ in 0..len {
                 self.dir_input
                     .handle_event(&crossterm::event::Event::Key(KeyEvent::new(
@@ -732,15 +593,7 @@ impl App {
     }
 
     fn update_dir_suggestion(&mut self) {
-        let current = self.dir_input.value().to_string();
-        self.dir_suggestion = complete_path(&current).and_then(|(completed, _)| {
-            let suffix = completed.strip_prefix(&current)?;
-            if suffix.is_empty() {
-                None
-            } else {
-                Some(suffix.to_string())
-            }
-        });
+        self.dir_suggestion = DirCompleter.suggest(self.dir_input.value());
     }
 
     fn branch_cursor_at_end(&self) -> bool {
@@ -750,49 +603,27 @@ impl App {
     fn update_branch_suggestion(&mut self) {
         let prefix = self.branch_name_input.value().to_string();
         let dir = self.dir_input.value().to_string();
-        if prefix.is_empty() || dir.is_empty() {
-            self.branch_suggestion = None;
-            return;
-        }
-        let branches = git::get_local_branches(&dir);
-        let suffix = branches
-            .iter()
-            .find(|b| b.starts_with(&prefix) && b.as_str() != prefix)
-            .and_then(|b| b.strip_prefix(&prefix))
-            .map(|s| s.to_string());
-        self.branch_suggestion = suffix;
+        self.branch_suggestion = BranchCompleter.suggest(&prefix, &dir);
     }
 
     fn complete_branch(&mut self) -> bool {
         let prefix = self.branch_name_input.value().to_string();
         let dir = self.dir_input.value().to_string();
-        if dir.is_empty() {
-            return false;
+        if let Some(common) = BranchCompleter.complete(&prefix, &dir) {
+            let len = common.len();
+            self.branch_name_input = Input::new(common);
+            for _ in 0..len {
+                self.branch_name_input
+                    .handle_event(&crossterm::event::Event::Key(KeyEvent::new(
+                        KeyCode::Right,
+                        crossterm::event::KeyModifiers::NONE,
+                    )));
+            }
+            self.update_branch_suggestion();
+            true
+        } else {
+            false
         }
-        let branches = git::get_local_branches(&dir);
-        let prefix_lower = prefix.to_lowercase();
-        let mut matches: Vec<&String> = branches
-            .iter()
-            .filter(|b| b.to_lowercase().starts_with(&prefix_lower) && b.as_str() != prefix)
-            .collect();
-        matches.sort();
-        if matches.is_empty() {
-            return false;
-        }
-        let common = longest_common_prefix(&matches.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        if common == prefix {
-            return false;
-        }
-        self.branch_name_input = Input::new(common.clone());
-        for _ in 0..common.len() {
-            self.branch_name_input
-                .handle_event(&crossterm::event::Event::Key(KeyEvent::new(
-                    KeyCode::Right,
-                    crossterm::event::KeyModifiers::NONE,
-                )));
-        }
-        self.update_branch_suggestion();
-        true
     }
 
     fn next_field(&mut self) {
@@ -1223,17 +1054,17 @@ impl App {
         frame.render_widget(selector_para, chunks[model_selector_idx]);
 
         // Hints
-        let hint_text = if self.show_recent_dirs || self.show_branches {
+        let hint_text = if self.recent_dirs_dropdown.visible || self.branch_dropdown.visible {
             "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::ModelSelection {
             "←/→: cycle model  |  Tab: next  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
-            if !self.recent_dirs.is_empty() {
+            if !self.recent_dirs_dropdown.items.is_empty() {
                 "Tab/→: complete  |  Ctrl+D: recent dirs  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
             } else {
                 "Tab/→: complete  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
             }
-        } else if self.focused_field == InputField::Directory && !self.recent_dirs.is_empty() {
+        } else if self.focused_field == InputField::Directory && !self.recent_dirs_dropdown.items.is_empty() {
             "Ctrl+D: recent dirs  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         } else if self.focused_field == InputField::BranchName && self.branch_suggestion.is_some() {
             "Tab/→: complete  |  Ctrl+D: branches  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
@@ -1259,10 +1090,10 @@ impl App {
         }
 
         // Recent directories dropdown (rendered last so it overlays hints/error)
-        if self.show_recent_dirs && !self.recent_dirs.is_empty() {
-            let filtered = self.filtered_recent_dirs();
-            let visible = filtered.len().min(Self::RECENT_DIRS_VISIBLE);
-            let dropdown_height = visible as u16 + 2; // +2 for borders
+        if self.recent_dirs_dropdown.visible && !self.recent_dirs_dropdown.items.is_empty() {
+            let filtered = self.recent_dirs_dropdown.filtered();
+            let visible = filtered.len().min(Self::DROPDOWN_VISIBLE);
+            let dropdown_height = visible as u16 + 2;
             let dropdown_area = ratatui::layout::Rect {
                 x: chunks[dir_input_idx].x,
                 y: chunks[dir_input_idx].y + chunks[dir_input_idx].height,
@@ -1273,10 +1104,10 @@ impl App {
             let items: Vec<ratatui::widgets::ListItem> = filtered
                 .iter()
                 .enumerate()
-                .skip(self.recent_dir_scroll)
+                .skip(self.recent_dirs_dropdown.scroll)
                 .take(visible)
                 .map(|(i, d)| {
-                    let style = if Some(i) == self.recent_dir_selected {
+                    let style = if Some(i) == self.recent_dirs_dropdown.selected {
                         Style::default().fg(theme::TEXT).bg(theme::GRAY)
                     } else {
                         Style::default().fg(theme::GRAY_DIM)
@@ -1284,17 +1115,17 @@ impl App {
                     ratatui::widgets::ListItem::new(Line::from(Span::styled(*d, style)))
                 })
                 .collect();
-            let title = if self.recent_dir_query.is_empty() {
+            let title = if self.recent_dirs_dropdown.query.is_empty() {
                 format!(
                     " Recent Directories ({}/{}) ",
-                    self.recent_dir_selected.map_or(0, |i| i + 1),
+                    self.recent_dirs_dropdown.selected.map_or(0, |i| i + 1),
                     filtered.len()
                 )
             } else {
                 format!(
                     " > {}  ({}/{}) ",
-                    self.recent_dir_query,
-                    self.recent_dir_selected.map_or(0, |i| i + 1),
+                    self.recent_dirs_dropdown.query,
+                    self.recent_dirs_dropdown.selected.map_or(0, |i| i + 1),
                     filtered.len()
                 )
             };
@@ -1310,12 +1141,12 @@ impl App {
         }
 
         // Branch list dropdown (rendered last so it overlays hints/error)
-        if self.show_branches
-            && !self.branch_list_items.is_empty()
+        if self.branch_dropdown.visible
+            && !self.branch_dropdown.items.is_empty()
             && let Some(anchor) = branch_chunk
         {
-            let filtered = self.filtered_branches();
-            let visible = filtered.len().min(Self::BRANCH_LIST_VISIBLE);
+            let filtered = self.branch_dropdown.filtered();
+            let visible = filtered.len().min(Self::DROPDOWN_VISIBLE);
             let dropdown_height = visible as u16 + 2;
             let dropdown_area = ratatui::layout::Rect {
                 x: anchor.x,
@@ -1327,10 +1158,10 @@ impl App {
             let items: Vec<ratatui::widgets::ListItem> = filtered
                 .iter()
                 .enumerate()
-                .skip(self.branch_list_scroll)
+                .skip(self.branch_dropdown.scroll)
                 .take(visible)
                 .map(|(i, b)| {
-                    let style = if Some(i) == self.branch_list_selected {
+                    let style = if Some(i) == self.branch_dropdown.selected {
                         Style::default().fg(theme::TEXT).bg(theme::GRAY)
                     } else {
                         Style::default().fg(theme::GRAY_DIM)
@@ -1338,17 +1169,17 @@ impl App {
                     ratatui::widgets::ListItem::new(Line::from(Span::styled(*b, style)))
                 })
                 .collect();
-            let title = if self.branch_list_query.is_empty() {
+            let title = if self.branch_dropdown.query.is_empty() {
                 format!(
                     " Branches ({}/{}) ",
-                    self.branch_list_selected.map_or(0, |i| i + 1),
+                    self.branch_dropdown.selected.map_or(0, |i| i + 1),
                     filtered.len()
                 )
             } else {
                 format!(
                     " > {}  ({}/{}) ",
-                    self.branch_list_query,
-                    self.branch_list_selected.map_or(0, |i| i + 1),
+                    self.branch_dropdown.query,
+                    self.branch_dropdown.selected.map_or(0, |i| i + 1),
                     filtered.len()
                 )
             };
@@ -1493,15 +1324,15 @@ impl App {
         frame.render_widget(dir_para, chunks[3]);
 
         // Hints
-        let hint_text = if self.show_recent_dirs {
+        let hint_text = if self.recent_dirs_dropdown.visible {
             "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::Directory && self.dir_suggestion.is_some() {
-            if !self.recent_dirs.is_empty() {
+            if !self.recent_dirs_dropdown.items.is_empty() {
                 "Tab/→: complete  |  Ctrl+D: recent dirs  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
             } else {
                 "Tab/→: complete  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
             }
-        } else if self.focused_field == InputField::Directory && !self.recent_dirs.is_empty() {
+        } else if self.focused_field == InputField::Directory && !self.recent_dirs_dropdown.items.is_empty() {
             "Ctrl+D: recent dirs  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
         } else {
             "Tab: next  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
@@ -1524,9 +1355,9 @@ impl App {
         }
 
         // Recent directories dropdown
-        if self.show_recent_dirs && !self.recent_dirs.is_empty() {
-            let filtered = self.filtered_recent_dirs();
-            let visible = filtered.len().min(Self::RECENT_DIRS_VISIBLE);
+        if self.recent_dirs_dropdown.visible && !self.recent_dirs_dropdown.items.is_empty() {
+            let filtered = self.recent_dirs_dropdown.filtered();
+            let visible = filtered.len().min(Self::DROPDOWN_VISIBLE);
             let dropdown_height = visible as u16 + 2;
             let dropdown_area = ratatui::layout::Rect {
                 x: chunks[3].x,
@@ -1538,10 +1369,10 @@ impl App {
             let items: Vec<ratatui::widgets::ListItem> = filtered
                 .iter()
                 .enumerate()
-                .skip(self.recent_dir_scroll)
+                .skip(self.recent_dirs_dropdown.scroll)
                 .take(visible)
                 .map(|(i, d)| {
-                    let style = if Some(i) == self.recent_dir_selected {
+                    let style = if Some(i) == self.recent_dirs_dropdown.selected {
                         Style::default().fg(theme::TEXT).bg(theme::GRAY)
                     } else {
                         Style::default().fg(theme::GRAY_DIM)
@@ -1549,17 +1380,17 @@ impl App {
                     ratatui::widgets::ListItem::new(Line::from(Span::styled(*d, style)))
                 })
                 .collect();
-            let title = if self.recent_dir_query.is_empty() {
+            let title = if self.recent_dirs_dropdown.query.is_empty() {
                 format!(
                     " Recent Directories ({}/{}) ",
-                    self.recent_dir_selected.map_or(0, |i| i + 1),
+                    self.recent_dirs_dropdown.selected.map_or(0, |i| i + 1),
                     filtered.len()
                 )
             } else {
                 format!(
                     " > {}  ({}/{}) ",
-                    self.recent_dir_query,
-                    self.recent_dir_selected.map_or(0, |i| i + 1),
+                    self.recent_dirs_dropdown.query,
+                    self.recent_dirs_dropdown.selected.map_or(0, |i| i + 1),
                     filtered.len()
                 )
             };
@@ -1837,39 +1668,35 @@ mod tests {
 
     #[test]
     fn test_complete_path_returns_none_for_empty() {
-        assert!(complete_path("").is_none());
+        assert!(DirCompleter.complete("").is_none());
     }
 
     #[test]
     fn test_complete_path_completes_tmp() {
-        // /tmp should exist on all systems
-        let result = complete_path("/tm");
+        let result = DirCompleter.complete("/tm");
         assert!(result.is_some());
-        let (completed, _) = result.unwrap();
-        assert!(completed.starts_with("/tmp"));
+        assert!(result.unwrap().starts_with("/tmp"));
     }
 
     #[test]
     fn test_complete_path_trailing_slash_lists_children() {
-        // /tmp/ should list children of /tmp
-        let result = complete_path("/tmp/");
-        // May or may not have completions depending on /tmp contents,
-        // but it should not panic
-        let _ = result;
+        let _ = DirCompleter.complete("/tmp/");
     }
 
     #[test]
     fn test_complete_path_nonexistent_returns_none() {
-        assert!(complete_path("/nonexistent_path_xyz_12345/abc").is_none());
+        assert!(DirCompleter.complete("/nonexistent_path_xyz_12345/abc").is_none());
     }
 
     #[test]
     fn test_longest_common_prefix_single() {
+        use crate::autocomplete::longest_common_prefix;
         assert_eq!(longest_common_prefix(&["hello".to_string()]), "hello");
     }
 
     #[test]
     fn test_longest_common_prefix_multiple() {
+        use crate::autocomplete::longest_common_prefix;
         assert_eq!(
             longest_common_prefix(&["hello".to_string(), "help".to_string(), "hero".to_string()]),
             "he"
@@ -1878,12 +1705,14 @@ mod tests {
 
     #[test]
     fn test_longest_common_prefix_empty_list() {
+        use crate::autocomplete::longest_common_prefix;
         let empty: Vec<String> = vec![];
         assert_eq!(longest_common_prefix(&empty), "");
     }
 
     #[test]
     fn test_longest_common_prefix_identical() {
+        use crate::autocomplete::longest_common_prefix;
         assert_eq!(
             longest_common_prefix(&["abc".to_string(), "abc".to_string()]),
             "abc"
@@ -1987,7 +1816,7 @@ mod tests {
         let dirs = vec!["/home/user/project".to_string(), "/tmp".to_string()];
         let app = App::with_recent_dirs(dirs);
         assert_eq!(app.dir_input.value(), "/home/user/project");
-        assert_eq!(app.recent_dirs.len(), 2);
+        assert_eq!(app.recent_dirs_dropdown.items.len(), 2);
     }
 
     #[test]
@@ -2015,8 +1844,8 @@ mod tests {
         let mut app = App::with_recent_dirs(dirs);
         app.focused_field = InputField::Directory;
         app.handle_key(ctrl_d());
-        assert!(app.show_recent_dirs);
-        assert_eq!(app.recent_dir_selected, Some(0));
+        assert!(app.recent_dirs_dropdown.visible);
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(0));
     }
 
     #[test]
@@ -2024,7 +1853,7 @@ mod tests {
         let mut app = App::new();
         app.focused_field = InputField::Directory;
         app.handle_key(ctrl_d());
-        assert!(!app.show_recent_dirs);
+        assert!(!app.recent_dirs_dropdown.visible);
     }
 
     #[test]
@@ -2033,7 +1862,7 @@ mod tests {
         let mut app = App::with_recent_dirs(dirs);
         app.focused_field = InputField::Title;
         app.handle_key(ctrl_d());
-        assert!(!app.show_recent_dirs);
+        assert!(!app.recent_dirs_dropdown.visible);
     }
 
     #[test]
@@ -2044,17 +1873,17 @@ mod tests {
         app.handle_key(ctrl_d());
 
         app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.recent_dir_selected, Some(1));
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(1));
 
         app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.recent_dir_selected, Some(2));
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(2));
 
         // Wraps around
         app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.recent_dir_selected, Some(0));
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(0));
 
         app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.recent_dir_selected, Some(2));
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(2));
     }
 
     #[test]
@@ -2066,7 +1895,7 @@ mod tests {
         app.handle_key(key(KeyCode::Down)); // select /home
         app.handle_key(key(KeyCode::Enter));
 
-        assert!(!app.show_recent_dirs);
+        assert!(!app.recent_dirs_dropdown.visible);
         assert_eq!(app.dir_input.value(), "/home");
     }
 
@@ -2079,7 +1908,7 @@ mod tests {
         app.handle_key(ctrl_d());
         app.handle_key(key(KeyCode::Esc));
 
-        assert!(!app.show_recent_dirs);
+        assert!(!app.recent_dirs_dropdown.visible);
         assert_eq!(app.dir_input.value(), original_dir);
     }
 
@@ -2090,26 +1919,26 @@ mod tests {
         let mut app = App::with_recent_dirs(dirs);
         app.focused_field = InputField::Directory;
         app.handle_key(ctrl_d());
-        assert_eq!(app.recent_dir_scroll, 0);
+        assert_eq!(app.recent_dirs_dropdown.scroll, 0);
 
         // Navigate down past the visible window
         for _ in 0..10 {
             app.handle_key(key(KeyCode::Down));
         }
-        assert_eq!(app.recent_dir_selected, Some(10));
-        assert_eq!(app.recent_dir_scroll, 1); // scrolled to keep selection visible
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(10));
+        assert_eq!(app.recent_dirs_dropdown.scroll, 1); // scrolled to keep selection visible
 
         // Navigate back up — still in view
         app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.recent_dir_selected, Some(9));
-        assert_eq!(app.recent_dir_scroll, 1);
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(9));
+        assert_eq!(app.recent_dirs_dropdown.scroll, 1);
 
         // Navigate up past scroll offset
         for _ in 0..9 {
             app.handle_key(key(KeyCode::Up));
         }
-        assert_eq!(app.recent_dir_selected, Some(0));
-        assert_eq!(app.recent_dir_scroll, 0);
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(0));
+        assert_eq!(app.recent_dirs_dropdown.scroll, 0);
     }
 
     #[test]
@@ -2121,8 +1950,8 @@ mod tests {
 
         // Wrap from first to last
         app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.recent_dir_selected, Some(14));
-        assert_eq!(app.recent_dir_scroll, 5); // 14 - 10 + 1 = 5
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(14));
+        assert_eq!(app.recent_dirs_dropdown.scroll, 5); // 14 - 10 + 1 = 5
     }
 
     #[test]
@@ -2135,10 +1964,10 @@ mod tests {
         for _ in 0..12 {
             app.handle_key(key(KeyCode::Down));
         }
-        assert!(app.recent_dir_scroll > 0);
+        assert!(app.recent_dirs_dropdown.scroll > 0);
 
         app.handle_key(key(KeyCode::Esc));
-        assert_eq!(app.recent_dir_scroll, 0);
+        assert_eq!(app.recent_dirs_dropdown.scroll, 0);
     }
 
     #[test]
@@ -2152,7 +1981,7 @@ mod tests {
             app.handle_key(key(KeyCode::Down));
         }
         app.handle_key(key(KeyCode::Enter));
-        assert_eq!(app.recent_dir_scroll, 0);
+        assert_eq!(app.recent_dirs_dropdown.scroll, 0);
         assert_eq!(app.dir_input.value(), "/dir12");
     }
 
@@ -2171,9 +2000,9 @@ mod tests {
         for c in "proj".chars() {
             app.handle_key(key(KeyCode::Char(c)));
         }
-        assert_eq!(app.recent_dir_query, "proj");
-        assert_eq!(app.filtered_recent_dirs(), vec!["/home/user/projects"]);
-        assert_eq!(app.recent_dir_selected, Some(0));
+        assert_eq!(app.recent_dirs_dropdown.query, "proj");
+        assert_eq!(app.recent_dirs_dropdown.filtered(), vec!["/home/user/projects"]);
+        assert_eq!(app.recent_dirs_dropdown.selected, Some(0));
     }
 
     #[test]
@@ -2185,7 +2014,7 @@ mod tests {
         for c in "PROJ".chars() {
             app.handle_key(key(KeyCode::Char(c)));
         }
-        assert_eq!(app.filtered_recent_dirs(), vec!["/home/user/Projects"]);
+        assert_eq!(app.recent_dirs_dropdown.filtered(), vec!["/home/user/Projects"]);
     }
 
     #[test]
@@ -2200,13 +2029,13 @@ mod tests {
         for c in "proj".chars() {
             app.handle_key(key(KeyCode::Char(c)));
         }
-        assert_eq!(app.filtered_recent_dirs().len(), 1);
+        assert_eq!(app.recent_dirs_dropdown.filtered().len(), 1);
         // Backspace back to empty — all dirs visible
         for _ in 0..4 {
             app.handle_key(key(KeyCode::Backspace));
         }
-        assert!(app.recent_dir_query.is_empty());
-        assert_eq!(app.filtered_recent_dirs().len(), 2);
+        assert!(app.recent_dirs_dropdown.query.is_empty());
+        assert_eq!(app.recent_dirs_dropdown.filtered().len(), 2);
     }
 
     #[test]
@@ -2222,9 +2051,9 @@ mod tests {
             app.handle_key(key(KeyCode::Char(c)));
         }
         app.handle_key(key(KeyCode::Enter));
-        assert!(!app.show_recent_dirs);
+        assert!(!app.recent_dirs_dropdown.visible);
         assert_eq!(app.dir_input.value(), "/home/user/downloads");
-        assert!(app.recent_dir_query.is_empty());
+        assert!(app.recent_dirs_dropdown.query.is_empty());
     }
 
     #[test]
@@ -2237,8 +2066,8 @@ mod tests {
             app.handle_key(key(KeyCode::Char(c)));
         }
         app.handle_key(key(KeyCode::Esc));
-        assert!(!app.show_recent_dirs);
-        assert!(app.recent_dir_query.is_empty());
+        assert!(!app.recent_dirs_dropdown.visible);
+        assert!(app.recent_dirs_dropdown.query.is_empty());
     }
 
     #[test]
@@ -2250,8 +2079,8 @@ mod tests {
         for c in "zzz_no_match".chars() {
             app.handle_key(key(KeyCode::Char(c)));
         }
-        assert_eq!(app.filtered_recent_dirs().len(), 0);
-        assert_eq!(app.recent_dir_selected, None);
+        assert_eq!(app.recent_dirs_dropdown.filtered().len(), 0);
+        assert_eq!(app.recent_dirs_dropdown.selected, None);
     }
 
     #[test]
@@ -2643,15 +2472,43 @@ mod tests {
 
     fn init_test_repo_with_branches(dir: &std::path::Path, branches: &[&str]) {
         use std::process::Command;
-        Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
-        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(dir).output().unwrap();
-        Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir).output().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         std::fs::write(dir.join("README.md"), "init").unwrap();
-        Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
-        Command::new("git").args(["commit", "-m", "initial"]).current_dir(dir).output().unwrap();
-        Command::new("git").args(["branch", "-M", "main"]).current_dir(dir).output().unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         for branch in branches {
-            Command::new("git").args(["branch", branch]).current_dir(dir).output().unwrap();
+            Command::new("git")
+                .args(["branch", branch])
+                .current_dir(dir)
+                .output()
+                .unwrap();
         }
     }
 
@@ -2712,7 +2569,8 @@ mod tests {
         app.branch_name_input = Input::new("feat".to_string());
         // Move cursor to end
         for _ in 0.."feat".len() {
-            app.branch_name_input.handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
+            app.branch_name_input
+                .handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
         }
         app.update_branch_suggestion();
 
@@ -2733,7 +2591,8 @@ mod tests {
         app.dir_input = Input::new(dir);
         app.branch_name_input = Input::new("feat".to_string());
         for _ in 0.."feat".len() {
-            app.branch_name_input.handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
+            app.branch_name_input
+                .handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
         }
         app.update_branch_suggestion();
 
@@ -2806,10 +2665,10 @@ mod tests {
 
         app.handle_key(ctrl(KeyCode::Char('d')));
 
-        assert!(app.show_branches);
-        assert_eq!(app.branch_list_selected, Some(0));
+        assert!(app.branch_dropdown.visible);
+        assert_eq!(app.branch_dropdown.selected, Some(0));
         // main + feature-auth + feature-ui = 3 branches
-        assert!(app.branch_list_items.len() >= 2);
+        assert!(app.branch_dropdown.items.len() >= 2);
     }
 
     #[test]
@@ -2824,7 +2683,7 @@ mod tests {
 
         app.handle_key(ctrl(KeyCode::Char('d')));
 
-        assert!(!app.show_branches);
+        assert!(!app.branch_dropdown.visible);
     }
 
     #[test]
@@ -2838,13 +2697,13 @@ mod tests {
         app.focused_field = InputField::BranchName;
         app.dir_input = Input::new(dir);
         app.handle_key(ctrl(KeyCode::Char('d')));
-        assert!(app.show_branches);
+        assert!(app.branch_dropdown.visible);
 
         // type "feat" to filter
         for c in "feat".chars() {
             app.handle_key(key(KeyCode::Char(c)));
         }
-        let filtered = app.filtered_branches();
+        let filtered = app.branch_dropdown.filtered();
         assert!(filtered.iter().all(|b| b.contains("feat")));
     }
 
@@ -2866,7 +2725,7 @@ mod tests {
         }
         app.handle_key(key(KeyCode::Enter));
 
-        assert!(!app.show_branches);
+        assert!(!app.branch_dropdown.visible);
         assert_eq!(app.branch_name_input.value(), "feature-auth");
     }
 
@@ -2881,10 +2740,10 @@ mod tests {
         app.focused_field = InputField::BranchName;
         app.dir_input = Input::new(dir);
         app.handle_key(ctrl(KeyCode::Char('d')));
-        assert!(app.show_branches);
+        assert!(app.branch_dropdown.visible);
 
         app.handle_key(key(KeyCode::Esc));
-        assert!(!app.show_branches);
+        assert!(!app.branch_dropdown.visible);
         assert_eq!(app.branch_name_input.value(), "");
     }
 }

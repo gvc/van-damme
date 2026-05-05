@@ -1,4 +1,4 @@
-use crate::session::{self, SessionState};
+use crate::session::{SessionDb, SessionState, default_db_path};
 use crate::tmux;
 use color_eyre::Result;
 use serde::Deserialize;
@@ -38,16 +38,32 @@ fn run_inner() -> Result<()> {
 
     let event: HookEvent = serde_json::from_str(&input)?;
 
-    if let Some(state) = state_for_event(&event.hook_event_name) {
-        let _ = session::update_state_by_claude_session(&event.session_id, state);
+    if let Some(state) = state_for_event(&event.hook_event_name)
+        && let Ok(path) = default_db_path()
+        && let Ok(mut db) = SessionDb::open(&path)
+        && let Some(s) = db
+            .sessions
+            .iter_mut()
+            .find(|s| s.claude_session_id.as_deref() == Some(&event.session_id))
+    {
+        s.state = state;
+        let _ = db.save();
     }
 
     if event.hook_event_name == "SessionStart"
-        && let Ok(Some(record)) = session::find_by_claude_session(&event.session_id)
+        && let Ok(path) = default_db_path()
+        && let Ok(db) = SessionDb::open(&path)
+        && let Some(record) = db
+            .sessions
+            .iter()
+            .find(|s| s.claude_session_id.as_deref() == Some(&event.session_id))
     {
         let window_name = tmux::window_name_from_command(&record.claude_command);
-        let _ =
-            tmux::setup_editor_window(&record.tmux_session_name, &record.directory, window_name);
+        let _ = tmux::setup_editor_window(
+            &record.tmux_session_name,
+            &record.directory,
+            window_name,
+        );
     }
 
     Ok(())
