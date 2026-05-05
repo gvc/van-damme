@@ -135,6 +135,24 @@ fn has_uncommitted_changes(directory: &str) -> Result<bool> {
     Ok(!output.stdout.is_empty())
 }
 
+/// Return all local branch names in `directory`. Returns empty vec on error.
+pub fn get_local_branches(directory: &str) -> Vec<String> {
+    let output = Command::new("git")
+        .args(["branch", "--format=%(refname:short)"])
+        .current_dir(directory)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn branch_exists_locally(directory: &str, branch_name: &str) -> Result<bool> {
     let output = Command::new("git")
         .args(["rev-parse", "--verify", branch_name])

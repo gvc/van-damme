@@ -133,26 +133,14 @@ impl SessionList {
         }
     }
 
-    /// Find selectable (Session) row indices, or non-empty GroupHeader indices if no sessions visible.
+    /// Find selectable row indices: sessions + collapsed non-empty group headers.
     fn selectable_indices(&self) -> Vec<usize> {
-        let sessions: Vec<usize> = self
-            .display_rows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| match r {
-                DisplayRow::Session(_) => Some(i),
-                _ => None,
-            })
-            .collect();
-        if !sessions.is_empty() {
-            return sessions;
-        }
-        // All groups collapsed — navigate between non-empty headers so z can expand them.
         self.display_rows
             .iter()
             .enumerate()
             .filter_map(|(i, r)| match r {
-                DisplayRow::GroupHeader { dir, .. } if !dir.is_empty() => Some(i),
+                DisplayRow::Session(_) => Some(i),
+                DisplayRow::GroupHeader { dir, collapsed: true } if !dir.is_empty() => Some(i),
                 _ => None,
             })
             .collect()
@@ -218,20 +206,20 @@ impl SessionList {
 
     fn clamp_selection(&mut self) {
         let selectable = self.selectable_indices();
-        if !selectable.is_empty() {
-            if self.list_state.selected().is_none()
-                || !selectable.contains(&self.list_state.selected().unwrap())
-            {
-                self.list_state.select(Some(selectable[0]));
-            }
+        if selectable.is_empty() {
+            self.list_state.select(None);
             return;
         }
-        // No sessions visible — select first non-empty group header so z can expand it.
-        let first_header = self
-            .display_rows
-            .iter()
-            .position(|r| matches!(r, DisplayRow::GroupHeader { dir, .. } if !dir.is_empty()));
-        self.list_state.select(first_header);
+        let current = self.list_state.selected();
+        // Keep current if still selectable.
+        if current.is_some_and(|cur| selectable.contains(&cur)) {
+            return;
+        }
+        // Current gone — prefer first visible session; fall back to first selectable (collapsed header).
+        let first_session = selectable.iter().copied().find(|&i| {
+            matches!(self.display_rows[i], DisplayRow::Session(_))
+        });
+        self.list_state.select(Some(first_session.unwrap_or(selectable[0])));
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> SessionListAction {
@@ -373,13 +361,40 @@ impl SessionList {
 
         let Some(dir) = group_dir else { return };
 
-        if self.collapsed_dirs.contains(&dir) {
+        let was_collapsed = self.collapsed_dirs.contains(&dir);
+        if was_collapsed {
             self.collapsed_dirs.remove(&dir);
         } else {
-            self.collapsed_dirs.insert(dir);
+            self.collapsed_dirs.insert(dir.clone());
         }
 
         self.rebuild_display_rows();
+
+        if was_collapsed {
+            // Expanding: move to first session in this group.
+            let target = self.display_rows.iter().enumerate().find_map(|(i, r)| {
+                if let DisplayRow::Session(si) = r
+                    && self.sessions[*si].directory == dir
+                {
+                    return Some(i);
+                }
+                None
+            });
+            if let Some(i) = target {
+                self.list_state.select(Some(i));
+                return;
+            }
+        } else {
+            // Collapsing: move to the header for this group.
+            let target = self.display_rows.iter().position(|r| {
+                matches!(r, DisplayRow::GroupHeader { dir: d, .. } if d == &dir)
+            });
+            if let Some(i) = target {
+                self.list_state.select(Some(i));
+                return;
+            }
+        }
+
         self.clamp_selection();
     }
 
@@ -708,16 +723,15 @@ impl SessionList {
 }
 
 fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_selected: bool) {
-    let (icon, state_color) = if session.claude_session_id.is_none() {
-        // Plain tmux session — use a neutral indicator
-        ("🖥", theme::GRAY_DIM)
+    let (status_label, state_color) = if session.claude_session_id.is_none() {
+        ("", theme::GRAY_DIM)
     } else {
-        let color = match session.state {
-            SessionState::Working => theme::ORANGE_BRIGHT,
-            SessionState::WaitingUser => theme::CYAN,
-            SessionState::Idle => theme::GRAY_DIM,
+        let (label, color) = match session.state {
+            SessionState::Working => ("working", theme::ORANGE_BRIGHT),
+            SessionState::WaitingUser => ("waiting", theme::CYAN_VIVID),
+            SessionState::Idle => ("idle", theme::GRAY_DIM),
         };
-        (session.state.icon(), color)
+        (label, color)
     };
 
     let border_fg = if is_selected {
@@ -738,10 +752,6 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
     }
 
     let content_w = card_inner.width as usize;
-    // All state icons are emoji and display as 2 terminal columns.
-    const ICON_COLS: usize = 2;
-    const ICON_GAP: usize = 1;
-    const PREFIX: usize = ICON_COLS + ICON_GAP; // 3 cols before name text
 
     let rows = Layout::vertical([
         Constraint::Length(1),
@@ -750,8 +760,9 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
     ])
     .split(card_inner);
 
-    // Row 0: icon + session name
-    let max_name = content_w.saturating_sub(PREFIX);
+    // Row 0: session name (left) + status label (right-aligned)
+    let status_w = status_label.len();
+    let max_name = content_w.saturating_sub(if status_w > 0 { status_w + 1 } else { 0 });
     let name = truncate_str(&session.tmux_session_name, max_name);
     let name_style = if is_selected {
         Style::default()
@@ -762,22 +773,32 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
             .fg(theme::SESSION_NAME)
             .add_modifier(Modifier::BOLD)
     };
+    let name_display_w = name.chars().count();
+    let gap = content_w.saturating_sub(name_display_w + status_w);
+    let padding = " ".repeat(gap);
+    let status_style = if matches!(session.state, SessionState::WaitingUser) {
+        Style::default()
+            .fg(state_color)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(state_color)
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(icon, Style::default().fg(state_color)),
-            Span::raw(" "),
             Span::styled(name, name_style),
+            Span::raw(padding),
+            Span::styled(status_label, status_style),
         ])),
         rows[0],
     );
 
-    // Row 1: directory (indented to align with name)
-    let dir = shorten_path(&session.directory, content_w.saturating_sub(PREFIX));
+    // Row 1: directory
+    let dir = shorten_path(&session.directory, content_w);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw("   "),
-            Span::styled(dir, Style::default().fg(theme::GRAY_DIM)),
-        ])),
+        Paragraph::new(Line::from(Span::styled(
+            dir,
+            Style::default().fg(theme::GRAY_DIM),
+        ))),
         rows[1],
     );
 
@@ -786,12 +807,12 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
         Some(m) => format!("{} · {}", session.claude_command, shorten_model_id(m)),
         None => session.claude_command.clone(),
     };
-    let cmd_tag = truncate_str(&cmd_tag, content_w.saturating_sub(PREFIX));
+    let cmd_tag = truncate_str(&cmd_tag, content_w);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw("   "),
-            Span::styled(cmd_tag, Style::default().fg(theme::GRAY_DIM)),
-        ])),
+        Paragraph::new(Line::from(Span::styled(
+            cmd_tag,
+            Style::default().fg(theme::GRAY_DIM),
+        ))),
         rows[2],
     );
 }
@@ -1336,35 +1357,29 @@ mod tests {
     }
 
     #[test]
-    fn test_collapse_moves_selection_to_next_visible() {
+    fn test_collapse_moves_selection_to_header() {
         let mut list = SessionList::new(sample_grouped_sessions());
         // Start at alpha (row 1), collapse /proj/a
         list.handle_key(key(KeyCode::Char('z')));
-        // Selection should now be on gamma (only visible session)
+        // Cursor should land on the collapsed /proj/a header (row 0)
         assert!(matches!(
-            list.display_rows[list.list_state.selected().unwrap()],
-            DisplayRow::Session(2)
+            &list.display_rows[list.list_state.selected().unwrap()],
+            DisplayRow::GroupHeader { dir, collapsed: true } if dir == "/proj/a"
         ));
     }
 
     #[test]
-    fn test_expand_restores_sessions() {
+    fn test_expand_moves_selection_to_first_session() {
         let mut list = SessionList::new(sample_grouped_sessions());
-        // Collapse /proj/a
+        // Collapse /proj/a — cursor lands on Header(/proj/a) row 0
         list.handle_key(key(KeyCode::Char('z')));
-        // Navigate to /proj/a header (now row 0)
-        list.list_state.select(Some(0));
-        // Expand
+        // Expand — cursor should jump to first session in /proj/a (alpha, row 1)
         list.handle_key(key(KeyCode::Char('z')));
 
-        // Should be back to 6 rows
         assert_eq!(list.display_rows.len(), 6);
         assert!(matches!(
-            &list.display_rows[0],
-            DisplayRow::GroupHeader {
-                collapsed: false,
-                ..
-            }
+            list.display_rows[list.list_state.selected().unwrap()],
+            DisplayRow::Session(0) // alpha
         ));
     }
 
@@ -1388,11 +1403,12 @@ mod tests {
     #[test]
     fn test_all_collapsed_header_selected() {
         let mut list = SessionList::new(sample_grouped_sessions());
-        // Collapse /proj/a (selected at alpha)
+        // Collapse /proj/a — cursor on Header(/proj/a) row 0
         list.handle_key(key(KeyCode::Char('z')));
-        // Collapse /proj/b (gamma is now selected)
-        list.handle_key(key(KeyCode::Char('z')));
-        // Both collapsed — a non-empty header should be selected
+        // Navigate to gamma (Session(2)), then collapse /proj/b
+        list.handle_key(key(KeyCode::Char('j'))); // gamma
+        list.handle_key(key(KeyCode::Char('z'))); // collapse /proj/b — cursor on Header(/proj/b)
+        // Both collapsed — selected should be a non-empty header
         let sel = list.list_state.selected().expect("should have selection");
         assert!(matches!(
             &list.display_rows[sel],
@@ -1473,6 +1489,31 @@ mod tests {
         let action = list.handle_key(key_shift(KeyCode::Char('Z')));
         assert_eq!(action, SessionListAction::None);
         assert!(list.collapsed_dirs.is_empty());
+    }
+
+    #[test]
+    fn test_navigate_mixed_collapsed_expanded() {
+        // /proj/a collapsed, /proj/b expanded
+        // Selectable: [Header(/proj/a, collapsed), Session(gamma)]
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Collapse /proj/a — cursor lands on Header(/proj/a) row 0
+        list.handle_key(key(KeyCode::Char('z')));
+        assert!(
+            matches!(&list.display_rows[list.list_state.selected().unwrap()],
+                DisplayRow::GroupHeader { dir, collapsed: true } if dir == "/proj/a")
+        );
+        // j should go to gamma (row 3)
+        list.handle_key(key(KeyCode::Char('j')));
+        assert!(matches!(
+            list.display_rows[list.list_state.selected().unwrap()],
+            DisplayRow::Session(2)
+        ));
+        // k should go back to collapsed header (row 0)
+        list.handle_key(key(KeyCode::Char('k')));
+        assert!(
+            matches!(&list.display_rows[list.list_state.selected().unwrap()],
+                DisplayRow::GroupHeader { dir, collapsed: true } if dir == "/proj/a")
+        );
     }
 
     #[test]
