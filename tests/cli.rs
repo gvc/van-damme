@@ -47,8 +47,8 @@ fn test_process_hook_writes_to_debug_log() {
         .join(".van-damme")
         .join("debug.log");
     let contents = std::fs::read_to_string(&log_path).unwrap();
-    assert!(contents.contains(r#""session_id": "test-123""#));
-    assert!(contents.contains(r#""hook_event_name": "Stop""#));
+    assert!(contents.contains("test-123"));
+    assert!(contents.contains("Stop"));
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn test_add_dir_defaults_to_cwd() {
 }
 
 #[test]
-fn test_process_hook_rejects_invalid_json() {
+fn test_process_hook_invalid_json_exits_zero() {
     let output = Command::new(env!("CARGO_BIN_EXE_vd"))
         .arg("process-hook")
         .stdin(std::process::Stdio::piped())
@@ -92,5 +92,49 @@ fn test_process_hook_rejects_invalid_json() {
             child.wait_with_output()
         })
         .expect("failed to run binary");
-    assert!(!output.status.success());
+    assert!(output.status.success());
+}
+
+#[test]
+fn test_process_hook_empty_stdin_exits_zero() {
+    let output = Command::new(env!("CARGO_BIN_EXE_vd"))
+        .arg("process-hook")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            drop(child.stdin.take());
+            child.wait_with_output()
+        })
+        .expect("failed to run binary");
+    assert!(output.status.success());
+}
+
+#[test]
+fn test_install_subcommand() {
+    let output = Command::new(env!("CARGO_BIN_EXE_vd"))
+        .arg("install")
+        .output()
+        .expect("failed to run binary");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("vd install complete"));
+}
+
+#[test]
+fn test_uninstall_subcommand() {
+    // Install first, then uninstall
+    Command::new(env!("CARGO_BIN_EXE_vd"))
+        .arg("install")
+        .output()
+        .expect("failed to run binary");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_vd"))
+        .arg("uninstall")
+        .output()
+        .expect("failed to run binary");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("vd uninstall complete"));
 }

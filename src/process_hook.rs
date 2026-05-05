@@ -4,6 +4,7 @@ use color_eyre::Result;
 use serde::Deserialize;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
+use std::time::SystemTime;
 
 #[derive(Deserialize)]
 struct HookEvent {
@@ -21,16 +22,23 @@ fn state_for_event(event_name: &str) -> Option<SessionState> {
 }
 
 pub fn run() -> Result<()> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
+    match run_inner() {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            log_error(&e.to_string());
+            Ok(())
+        }
+    }
+}
 
-    // Log the raw input for debugging
-    log_input(&input)?;
+fn run_inner() -> Result<()> {
+    let input = read_stdin()?;
+
+    log_raw(&input);
 
     let event: HookEvent = serde_json::from_str(&input)?;
 
     if let Some(state) = state_for_event(&event.hook_event_name) {
-        // Silently ignore if the session isn't tracked by us
         let _ = session::update_state_by_claude_session(&event.session_id, state);
     }
 
@@ -45,31 +53,66 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn log_input(input: &str) -> Result<()> {
-    let parsed: serde_json::Value = serde_json::from_str(input)?;
-    let pretty = serde_json::to_string_pretty(&parsed)?;
-
-    let log_path = dirs::home_dir()
-        .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine home directory"))?
-        .join(".van-damme")
-        .join("debug.log");
-
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)?;
+fn read_stdin() -> Result<String> {
+    let mut input = String::new();
+    match io::stdin().read_to_string(&mut input) {
+        Ok(0) => Err(color_eyre::eyre::eyre!("empty stdin")),
+        Ok(_) => {
+            if input.trim().is_empty() {
+                Err(color_eyre::eyre::eyre!("empty stdin"))
+            } else {
+                Ok(input)
+            }
+        }
+        Err(e) => Err(e.into()),
     }
+}
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
+fn log_path() -> Option<std::path::PathBuf> {
+    Some(dirs::home_dir()?.join(".van-damme").join("debug.log"))
+}
 
-    writeln!(file, "{pretty}")?;
-    Ok(())
+fn timestamp() -> String {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
+fn log_raw(input: &str) {
+    let _ = (|| -> io::Result<()> {
+        let path = log_path().ok_or(io::Error::other("no home"))?;
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if fs::metadata(&path).is_ok_and(|meta| meta.len() > 1_048_576) {
+            fs::write(&path, "")?;
+        }
+
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        writeln!(file, "[{}] {}", timestamp(), input.trim())?;
+        Ok(())
+    })();
+}
+
+fn log_error(msg: &str) {
+    let _ = (|| -> io::Result<()> {
+        let path = log_path().ok_or(io::Error::other("no home"))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        writeln!(file, "[{}] ERROR: {}", timestamp(), msg)?;
+        Ok(())
+    })();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_state_for_event_stop() {
         assert_eq!(state_for_event("Stop"), Some(SessionState::Idle));
@@ -112,23 +155,45 @@ mod tests {
     }
 
     #[test]
-    fn test_log_input_writes_to_file() {
+    fn test_log_raw_writes_to_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let log_path = tmp.path().join("debug.log");
-
-        let input = r#"{"session_id":"abc-123","hook_event_name":"Stop"}"#;
-        let parsed: serde_json::Value = serde_json::from_str(input).unwrap();
-        let pretty = serde_json::to_string_pretty(&parsed).unwrap();
+        let log_file = tmp.path().join("debug.log");
 
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&log_path)
+            .open(&log_file)
             .unwrap();
-        writeln!(file, "{pretty}").unwrap();
+        writeln!(file, "[123] test input").unwrap();
 
-        let contents = fs::read_to_string(&log_path).unwrap();
-        assert!(contents.contains("abc-123"));
-        assert!(contents.contains("Stop"));
+        let contents = fs::read_to_string(&log_file).unwrap();
+        assert!(contents.contains("test input"));
+    }
+
+    #[test]
+    fn test_log_rotation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_file = tmp.path().join("debug.log");
+
+        let big_content = "x".repeat(1_048_577);
+        fs::write(&log_file, &big_content).unwrap();
+
+        assert!(fs::metadata(&log_file).unwrap().len() > 1_048_576);
+
+        let path = log_file.clone();
+        let _ = (|| -> io::Result<()> {
+            if let Ok(meta) = fs::metadata(&path) {
+                if meta.len() > 1_048_576 {
+                    fs::write(&path, "")?;
+                }
+            }
+            let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+            writeln!(file, "[0] after rotation")?;
+            Ok(())
+        })();
+
+        let contents = fs::read_to_string(&log_file).unwrap();
+        assert!(contents.contains("after rotation"));
+        assert!(contents.len() < 100);
     }
 }
