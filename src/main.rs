@@ -1,6 +1,7 @@
 mod app;
 mod event;
 mod git;
+mod install;
 mod preferences;
 mod process_hook;
 mod recent_dirs;
@@ -50,6 +51,12 @@ fn main() -> Result<()> {
     }
     if args.get(1).is_some_and(|a| a == "process-hook") {
         return process_hook::run();
+    }
+    if args.get(1).is_some_and(|a| a == "install") {
+        return install::run_install();
+    }
+    if args.get(1).is_some_and(|a| a == "uninstall") {
+        return install::run_uninstall();
     }
     if args.get(1).is_some_and(|a| a == "add-dir") {
         let dir = args.get(2).cloned().unwrap_or_else(|| {

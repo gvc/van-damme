@@ -64,7 +64,11 @@ fn load_db_from(path: &Path) -> Result<SessionDb> {
     let mut db: SessionDb = serde_json::from_str(&contents)?;
     for s in &mut db.sessions {
         let t = s.directory.trim_end_matches('/');
-        s.directory = if t.is_empty() { "/".to_string() } else { t.to_string() };
+        s.directory = if t.is_empty() {
+            "/".to_string()
+        } else {
+            t.to_string()
+        };
     }
     Ok(db)
 }
@@ -214,7 +218,11 @@ fn add_session_to(
 
     let directory = {
         let t = directory.trim_end_matches('/');
-        if t.is_empty() { "/".to_string() } else { t.to_string() }
+        if t.is_empty() {
+            "/".to_string()
+        } else {
+            t.to_string()
+        }
     };
 
     let record = SessionRecord {

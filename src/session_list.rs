@@ -650,10 +650,7 @@ impl SessionList {
         let (title, border_fg) = match selected {
             Some(s) => (format!(" {} ", s.tmux_session_name), theme::ORANGE),
             None => match self.selected_header_dir() {
-                Some(dir) => (
-                    format!(" {} ", shorten_path(dir, 40)),
-                    theme::CYAN,
-                ),
+                Some(dir) => (format!(" {} ", shorten_path(dir, 40)), theme::CYAN),
                 None => (" no session selected ".to_string(), theme::BLUE),
             },
         };
