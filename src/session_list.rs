@@ -53,7 +53,10 @@ impl SessionList {
     }
 
     pub fn refresh(&mut self) {
-        match crate::session::list_sessions() {
+        let sessions = crate::session::default_db_path()
+            .and_then(|p| crate::session::SessionDb::open(&p))
+            .map(|db| db.sessions.clone());
+        match sessions {
             Ok(sessions) => {
                 let alive: Vec<SessionRecord> = sessions
                     .into_iter()
@@ -68,13 +71,16 @@ impl SessionList {
     }
 
     pub fn refresh_states(&mut self) {
-        let Ok(db_sessions) = crate::session::list_sessions() else {
+        let Ok(db_sessions) = crate::session::default_db_path()
+            .and_then(|p| crate::session::SessionDb::open(&p))
+            .map(|db| db.sessions.clone())
+        else {
             return;
         };
         for session in self.list.items_mut() {
             if let Some(updated) = db_sessions
                 .iter()
-                .find(|s| s.tmux_session_name == session.tmux_session_name)
+                .find(|s: &&SessionRecord| s.tmux_session_name == session.tmux_session_name)
             {
                 session.state = updated.state.clone();
             }
@@ -150,7 +156,12 @@ impl SessionList {
 
     fn kill_session(&mut self, name: &str) {
         let _ = tmux::kill_session(name);
-        let _ = crate::session::remove_session(name);
+        if let Ok(path) = crate::session::default_db_path()
+            && let Ok(mut db) = crate::session::SessionDb::open(&path)
+        {
+            db.sessions.retain(|s| s.tmux_session_name != name);
+            let _ = db.save();
+        }
         self.status_message = Some(format!("Deleted session: {name}"));
         self.refresh();
     }

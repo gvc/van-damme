@@ -79,7 +79,10 @@ fn main() -> Result<()> {
     let mut terminal = tui::init()?;
     let events = EventHandler::new(250);
 
-    let sessions = session::list_sessions().unwrap_or_default();
+    let sessions = session::default_db_path()
+        .and_then(|p| session::SessionDb::open(&p))
+        .map(|db| db.sessions.clone())
+        .unwrap_or_default();
     // Filter to only sessions still alive in tmux
     let alive: Vec<_> = sessions
         .into_iter()
@@ -424,14 +427,29 @@ fn launch_session(
 
     let _ = progress.send("Creating tmux session...".into());
 
-    session::add_session(
-        String::new(), // placeholder — updated after tmux session is created
-        session_name.clone(),
-        claude_session_id.clone(),
-        directory.to_string(),
-        claude_command.to_string(),
-        model_selection.model_id().map(str::to_string),
-    )?;
+    let db_path = session::default_db_path()?;
+    {
+        let mut db = session::SessionDb::open(&db_path)?;
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let dir = {
+            let t = directory.trim_end_matches('/');
+            if t.is_empty() { "/".to_string() } else { t.to_string() }
+        };
+        db.sessions.push(session::SessionRecord {
+            tmux_session_id: String::new(), // placeholder — updated after tmux session is created
+            tmux_session_name: session_name.clone(),
+            claude_session_id: Some(claude_session_id.clone()),
+            directory: dir,
+            created_at,
+            state: session::SessionState::Idle,
+            claude_command: claude_command.to_string(),
+            model_id: model_selection.model_id().map(str::to_string),
+        });
+        db.save()?;
+    }
 
     let tmux_session = match tmux::create_session(
         &session_name,
@@ -446,13 +464,26 @@ fn launch_session(
         Ok(s) => s,
         Err(e) => {
             // Clean up the DB record if tmux session creation fails
-            let _ = session::remove_session(&session_name);
+            if let Ok(mut db) = session::SessionDb::open(&db_path) {
+                db.sessions.retain(|s| s.tmux_session_name != session_name);
+                let _ = db.save();
+            }
             return Err(e);
         }
     };
 
     // Update the record with the real tmux session ID
-    session::update_tmux_session_id(&session_name, &tmux_session.session_id)?;
+    {
+        let mut db = session::SessionDb::open(&db_path)?;
+        if let Some(s) = db
+            .sessions
+            .iter_mut()
+            .find(|s| s.tmux_session_name == session_name)
+        {
+            s.tmux_session_id = tmux_session.session_id.clone();
+        }
+        db.save()?;
+    }
 
     recent_dirs::record_directory(directory)?;
 
@@ -501,11 +532,29 @@ fn launch_tmux_session(
 
     let tmux_session = tmux::create_plain_session(session_name, directory)?;
 
-    session::add_plain_session(
-        tmux_session.session_id,
-        session_name.to_string(),
-        directory.to_string(),
-    )?;
+    {
+        let db_path = session::default_db_path()?;
+        let mut db = session::SessionDb::open(&db_path)?;
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let dir = {
+            let t = directory.trim_end_matches('/');
+            if t.is_empty() { "/".to_string() } else { t.to_string() }
+        };
+        db.sessions.push(session::SessionRecord {
+            tmux_session_id: tmux_session.session_id,
+            tmux_session_name: session_name.to_string(),
+            claude_session_id: None,
+            directory: dir,
+            created_at,
+            state: session::SessionState::Idle,
+            claude_command: "claude".to_string(),
+            model_id: None,
+        });
+        db.save()?;
+    }
 
     recent_dirs::record_directory(directory)?;
 
