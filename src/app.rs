@@ -10,7 +10,7 @@ use std::path::Path;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::{recent_dirs, theme};
+use crate::{git, recent_dirs, theme};
 
 /// Break text into lines of at most `width` characters (character-level wrapping).
 /// Returns a Vec of line strings. This matches the cursor math which uses
@@ -234,12 +234,18 @@ pub struct App {
     pub claude_command_input: Input,
     pub model_selection: ModelSelection,
     pub dir_suggestion: Option<String>,
+    pub branch_suggestion: Option<String>,
     pub error_message: Option<String>,
     pub recent_dirs: Vec<String>,
     pub recent_dir_selected: Option<usize>,
     pub recent_dir_scroll: usize,
     pub show_recent_dirs: bool,
     pub recent_dir_query: String,
+    pub show_branches: bool,
+    pub branch_list_items: Vec<String>,
+    pub branch_list_selected: Option<usize>,
+    pub branch_list_scroll: usize,
+    pub branch_list_query: String,
 }
 
 impl App {
@@ -284,12 +290,18 @@ impl App {
             claude_command_input: Input::new("claude".to_string()),
             model_selection,
             dir_suggestion: None,
+            branch_suggestion: None,
             error_message: None,
             recent_dirs,
             recent_dir_selected: None,
             recent_dir_scroll: 0,
             show_recent_dirs: false,
             recent_dir_query: String::new(),
+            show_branches: false,
+            branch_list_items: Vec::new(),
+            branch_list_selected: None,
+            branch_list_scroll: 0,
+            branch_list_query: String::new(),
         }
     }
 
@@ -301,6 +313,11 @@ impl App {
         // Handle recent dirs dropdown navigation
         if self.show_recent_dirs {
             return self.handle_recent_dirs_key(key);
+        }
+
+        // Handle branch list dropdown navigation
+        if self.show_branches {
+            return self.handle_branch_list_key(key);
         }
 
         // Ctrl+G toggles git mode (Worktree/Branch) from any field
@@ -359,6 +376,16 @@ impl App {
                 }
                 Action::None
             }
+            KeyCode::Tab
+                if self.focused_field == InputField::BranchName
+                    && self.branch_suggestion.is_some()
+                    && self.branch_cursor_at_end() =>
+            {
+                if !self.complete_branch() {
+                    self.next_field();
+                }
+                Action::None
+            }
             KeyCode::Tab | KeyCode::Down => {
                 self.next_field();
                 Action::None
@@ -373,6 +400,14 @@ impl App {
                     && self.cursor_at_end() =>
             {
                 self.complete_directory();
+                Action::None
+            }
+            KeyCode::Right
+                if self.focused_field == InputField::BranchName
+                    && self.branch_suggestion.is_some()
+                    && self.branch_cursor_at_end() =>
+            {
+                self.complete_branch();
                 Action::None
             }
             KeyCode::Left if self.focused_field == InputField::ModelSelection => {
@@ -400,6 +435,25 @@ impl App {
                     return Action::None;
                 }
 
+                // Ctrl+D opens branch list when on branch name field
+                if self.focused_field == InputField::BranchName
+                    && key.code == KeyCode::Char('d')
+                    && key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                {
+                    let dir = self.dir_input.value().to_string();
+                    let branches = git::get_local_branches(&dir);
+                    if !branches.is_empty() {
+                        self.branch_list_items = branches;
+                        self.branch_list_selected = Some(0);
+                        self.branch_list_scroll = 0;
+                        self.branch_list_query.clear();
+                        self.show_branches = true;
+                    }
+                    return Action::None;
+                }
+
                 // Forward to focused input
                 match self.focused_field {
                     InputField::Title => {
@@ -414,6 +468,7 @@ impl App {
                     InputField::BranchName => {
                         self.branch_name_input
                             .handle_event(&crossterm::event::Event::Key(key));
+                        self.update_branch_suggestion();
                     }
                     InputField::Prompt => {
                         self.prompt_input
@@ -545,6 +600,108 @@ impl App {
         }
     }
 
+    const BRANCH_LIST_VISIBLE: usize = 10;
+
+    fn filtered_branches(&self) -> Vec<&str> {
+        if self.branch_list_query.is_empty() {
+            self.branch_list_items.iter().map(|s| s.as_str()).collect()
+        } else {
+            let q = self.branch_list_query.to_lowercase();
+            self.branch_list_items
+                .iter()
+                .filter(|b| b.to_lowercase().contains(&q))
+                .map(|s| s.as_str())
+                .collect()
+        }
+    }
+
+    fn adjust_branch_list_scroll(&mut self) {
+        if let Some(sel) = self.branch_list_selected {
+            let visible = Self::BRANCH_LIST_VISIBLE;
+            if sel < self.branch_list_scroll {
+                self.branch_list_scroll = sel;
+            } else if sel >= self.branch_list_scroll + visible {
+                self.branch_list_scroll = sel + 1 - visible;
+            }
+        } else {
+            self.branch_list_scroll = 0;
+        }
+    }
+
+    fn handle_branch_list_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => {
+                self.show_branches = false;
+                self.branch_list_selected = None;
+                self.branch_list_scroll = 0;
+                self.branch_list_query.clear();
+                Action::None
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                let n = self.filtered_branches().len();
+                if n > 0 {
+                    self.branch_list_selected = Some(match self.branch_list_selected {
+                        Some(i) if i > 0 => i - 1,
+                        _ => n - 1,
+                    });
+                }
+                self.adjust_branch_list_scroll();
+                Action::None
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                let n = self.filtered_branches().len();
+                if n > 0 {
+                    self.branch_list_selected = Some(match self.branch_list_selected {
+                        Some(i) if i < n - 1 => i + 1,
+                        _ => 0,
+                    });
+                }
+                self.adjust_branch_list_scroll();
+                Action::None
+            }
+            KeyCode::Enter => {
+                let selected = self
+                    .branch_list_selected
+                    .and_then(|i| self.filtered_branches().get(i).map(|s| s.to_string()));
+                if let Some(branch) = selected {
+                    self.branch_name_input = Input::new(branch.clone());
+                    for _ in 0..branch.len() {
+                        self.branch_name_input
+                            .handle_event(&crossterm::event::Event::Key(KeyEvent::new(
+                                KeyCode::Right,
+                                crossterm::event::KeyModifiers::NONE,
+                            )));
+                    }
+                    self.update_branch_suggestion();
+                }
+                self.show_branches = false;
+                self.branch_list_selected = None;
+                self.branch_list_scroll = 0;
+                self.branch_list_query.clear();
+                Action::None
+            }
+            KeyCode::Backspace => {
+                self.branch_list_query.pop();
+                let n = self.filtered_branches().len();
+                self.branch_list_selected = if n > 0 { Some(0) } else { None };
+                self.branch_list_scroll = 0;
+                Action::None
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.branch_list_query.push(c);
+                let n = self.filtered_branches().len();
+                self.branch_list_selected = if n > 0 { Some(0) } else { None };
+                self.branch_list_scroll = 0;
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
     fn cursor_at_end(&self) -> bool {
         self.dir_input.visual_cursor() >= self.dir_input.value().len()
     }
@@ -584,6 +741,58 @@ impl App {
                 Some(suffix.to_string())
             }
         });
+    }
+
+    fn branch_cursor_at_end(&self) -> bool {
+        self.branch_name_input.visual_cursor() >= self.branch_name_input.value().len()
+    }
+
+    fn update_branch_suggestion(&mut self) {
+        let prefix = self.branch_name_input.value().to_string();
+        let dir = self.dir_input.value().to_string();
+        if prefix.is_empty() || dir.is_empty() {
+            self.branch_suggestion = None;
+            return;
+        }
+        let branches = git::get_local_branches(&dir);
+        let suffix = branches
+            .iter()
+            .find(|b| b.starts_with(&prefix) && b.as_str() != prefix)
+            .and_then(|b| b.strip_prefix(&prefix))
+            .map(|s| s.to_string());
+        self.branch_suggestion = suffix;
+    }
+
+    fn complete_branch(&mut self) -> bool {
+        let prefix = self.branch_name_input.value().to_string();
+        let dir = self.dir_input.value().to_string();
+        if dir.is_empty() {
+            return false;
+        }
+        let branches = git::get_local_branches(&dir);
+        let prefix_lower = prefix.to_lowercase();
+        let mut matches: Vec<&String> = branches
+            .iter()
+            .filter(|b| b.to_lowercase().starts_with(&prefix_lower) && b.as_str() != prefix)
+            .collect();
+        matches.sort();
+        if matches.is_empty() {
+            return false;
+        }
+        let common = longest_common_prefix(&matches.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        if common == prefix {
+            return false;
+        }
+        self.branch_name_input = Input::new(common.clone());
+        for _ in 0..common.len() {
+            self.branch_name_input
+                .handle_event(&crossterm::event::Event::Key(KeyEvent::new(
+                    KeyCode::Right,
+                    crossterm::event::KeyModifiers::NONE,
+                )));
+        }
+        self.update_branch_suggestion();
+        true
     }
 
     fn next_field(&mut self) {
@@ -893,6 +1102,7 @@ impl App {
 
         // Branch name (only when Branch mode)
         let mut branch_inner = None;
+        let mut branch_chunk = None;
         if self.git_mode == GitMode::Branch
             && let (Some(bl_idx), Some(bi_idx)) = (branch_label_idx, branch_input_idx)
         {
@@ -911,9 +1121,20 @@ impl App {
                 .style(Style::default().bg(theme::BG));
             let bi = branch_block.inner(chunks[bi_idx]);
             branch_inner = Some(bi);
-            let branch_para = Paragraph::new(self.branch_name_input.value())
-                .style(Style::default().fg(theme::TEXT))
-                .block(branch_block);
+            branch_chunk = Some(chunks[bi_idx]);
+            let branch_value = self.branch_name_input.value();
+            let branch_line = if let Some(ref suggestion) = self.branch_suggestion {
+                Line::from(vec![
+                    Span::styled(branch_value.to_string(), Style::default().fg(theme::TEXT)),
+                    Span::styled(suggestion.as_str(), Style::default().fg(theme::BLUE)),
+                ])
+            } else {
+                Line::from(Span::styled(
+                    branch_value.to_string(),
+                    Style::default().fg(theme::TEXT),
+                ))
+            };
+            let branch_para = Paragraph::new(branch_line).block(branch_block);
             frame.render_widget(branch_para, chunks[bi_idx]);
         }
 
@@ -1002,7 +1223,7 @@ impl App {
         frame.render_widget(selector_para, chunks[model_selector_idx]);
 
         // Hints
-        let hint_text = if self.show_recent_dirs {
+        let hint_text = if self.show_recent_dirs || self.show_branches {
             "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::ModelSelection {
             "←/→: cycle model  |  Tab: next  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
@@ -1014,6 +1235,10 @@ impl App {
             }
         } else if self.focused_field == InputField::Directory && !self.recent_dirs.is_empty() {
             "Ctrl+D: recent dirs  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
+        } else if self.focused_field == InputField::BranchName && self.branch_suggestion.is_some() {
+            "Tab/→: complete  |  Ctrl+D: branches  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
+        } else if self.focused_field == InputField::BranchName {
+            "Ctrl+D: branches  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         } else {
             "Tab: next  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         };
@@ -1070,6 +1295,60 @@ impl App {
                     " > {}  ({}/{}) ",
                     self.recent_dir_query,
                     self.recent_dir_selected.map_or(0, |i| i + 1),
+                    filtered.len()
+                )
+            };
+            let dropdown = ratatui::widgets::List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::ORANGE))
+                    .title(title)
+                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+                    .style(Style::default().bg(theme::BG)),
+            );
+            frame.render_widget(dropdown, dropdown_area);
+        }
+
+        // Branch list dropdown (rendered last so it overlays hints/error)
+        if self.show_branches
+            && !self.branch_list_items.is_empty()
+            && let Some(anchor) = branch_chunk
+        {
+            let filtered = self.filtered_branches();
+            let visible = filtered.len().min(Self::BRANCH_LIST_VISIBLE);
+            let dropdown_height = visible as u16 + 2;
+            let dropdown_area = ratatui::layout::Rect {
+                x: anchor.x,
+                y: anchor.y + anchor.height,
+                width: anchor.width,
+                height: dropdown_height,
+            };
+            frame.render_widget(Clear, dropdown_area);
+            let items: Vec<ratatui::widgets::ListItem> = filtered
+                .iter()
+                .enumerate()
+                .skip(self.branch_list_scroll)
+                .take(visible)
+                .map(|(i, b)| {
+                    let style = if Some(i) == self.branch_list_selected {
+                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
+                    } else {
+                        Style::default().fg(theme::GRAY_DIM)
+                    };
+                    ratatui::widgets::ListItem::new(Line::from(Span::styled(*b, style)))
+                })
+                .collect();
+            let title = if self.branch_list_query.is_empty() {
+                format!(
+                    " Branches ({}/{}) ",
+                    self.branch_list_selected.map_or(0, |i| i + 1),
+                    filtered.len()
+                )
+            } else {
+                format!(
+                    " > {}  ({}/{}) ",
+                    self.branch_list_query,
+                    self.branch_list_selected.map_or(0, |i| i + 1),
                     filtered.len()
                 )
             };
@@ -2360,5 +2639,252 @@ mod tests {
         app.focused_field = InputField::Title;
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.focused_field, InputField::ModelSelection);
+    }
+
+    fn init_test_repo_with_branches(dir: &std::path::Path, branches: &[&str]) {
+        use std::process::Command;
+        Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir).output().unwrap();
+        std::fs::write(dir.join("README.md"), "init").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["commit", "-m", "initial"]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["branch", "-M", "main"]).current_dir(dir).output().unwrap();
+        for branch in branches {
+            Command::new("git").args(["branch", branch]).current_dir(dir).output().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_update_branch_suggestion_shows_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth", "feature-ui"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+        app.branch_name_input = Input::new("feature-a".to_string());
+        app.update_branch_suggestion();
+
+        assert_eq!(app.branch_suggestion, Some("uth".to_string()));
+    }
+
+    #[test]
+    fn test_update_branch_suggestion_no_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.dir_input = Input::new(dir);
+        app.branch_name_input = Input::new("xyz".to_string());
+        app.update_branch_suggestion();
+
+        assert_eq!(app.branch_suggestion, None);
+    }
+
+    #[test]
+    fn test_update_branch_suggestion_exact_match_no_suggestion() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.dir_input = Input::new(dir);
+        app.branch_name_input = Input::new("feature-auth".to_string());
+        app.update_branch_suggestion();
+
+        assert_eq!(app.branch_suggestion, None);
+    }
+
+    #[test]
+    fn test_complete_branch_fills_common_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth", "feature-api"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+        app.branch_name_input = Input::new("feat".to_string());
+        // Move cursor to end
+        for _ in 0.."feat".len() {
+            app.branch_name_input.handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
+        }
+        app.update_branch_suggestion();
+
+        let progressed = app.complete_branch();
+        assert!(progressed);
+        assert_eq!(app.branch_name_input.value(), "feature-a");
+    }
+
+    #[test]
+    fn test_complete_branch_single_match_fills_full() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+        app.branch_name_input = Input::new("feat".to_string());
+        for _ in 0.."feat".len() {
+            app.branch_name_input.handle_event(&crossterm::event::Event::Key(key(KeyCode::Right)));
+        }
+        app.update_branch_suggestion();
+
+        let progressed = app.complete_branch();
+        assert!(progressed);
+        assert_eq!(app.branch_name_input.value(), "feature-auth");
+    }
+
+    #[test]
+    fn test_tab_on_branch_field_completes() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+        // Type "feat" into branch field
+        for c in "feat".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        // suggestion should be active
+        assert!(app.branch_suggestion.is_some());
+
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.branch_name_input.value(), "feature-auth");
+        // still on BranchName (progress was made)
+        assert_eq!(app.focused_field, InputField::BranchName);
+    }
+
+    #[test]
+    fn test_right_on_branch_field_completes() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+        for c in "feat".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        assert!(app.branch_suggestion.is_some());
+
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.branch_name_input.value(), "feature-auth");
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: crossterm::event::KeyModifiers::CONTROL,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn test_ctrl_d_on_branch_field_opens_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth", "feature-ui"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+
+        assert!(app.show_branches);
+        assert_eq!(app.branch_list_selected, Some(0));
+        // main + feature-auth + feature-ui = 3 branches
+        assert!(app.branch_list_items.len() >= 2);
+    }
+
+    #[test]
+    fn test_ctrl_d_no_git_repo_does_not_open_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+
+        assert!(!app.show_branches);
+    }
+
+    #[test]
+    fn test_branch_list_filter_by_typing() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth", "fix-bug"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+        app.handle_key(ctrl(KeyCode::Char('d')));
+        assert!(app.show_branches);
+
+        // type "feat" to filter
+        for c in "feat".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        let filtered = app.filtered_branches();
+        assert!(filtered.iter().all(|b| b.contains("feat")));
+    }
+
+    #[test]
+    fn test_branch_list_enter_selects_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+        app.handle_key(ctrl(KeyCode::Char('d')));
+
+        // Filter down to feature-auth
+        for c in "feature".chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(!app.show_branches);
+        assert_eq!(app.branch_name_input.value(), "feature-auth");
+    }
+
+    #[test]
+    fn test_branch_list_esc_closes_without_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo_with_branches(tmp.path(), &["feature-auth"]);
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Branch;
+        app.focused_field = InputField::BranchName;
+        app.dir_input = Input::new(dir);
+        app.handle_key(ctrl(KeyCode::Char('d')));
+        assert!(app.show_branches);
+
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.show_branches);
+        assert_eq!(app.branch_name_input.value(), "");
     }
 }
