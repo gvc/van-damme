@@ -10,6 +10,7 @@ mod recent_dirs;
 mod session;
 mod session_launcher;
 mod session_list;
+mod splash;
 pub mod theme;
 mod tmux;
 mod tui;
@@ -79,7 +80,7 @@ fn main() -> Result<()> {
     color_eyre::install()?;
 
     let mut terminal = tui::init()?;
-    let events = EventHandler::new(250);
+    let events = EventHandler::new(80);
 
     let sessions = session::default_db_path()
         .and_then(|p| session::SessionDb::open(&p))
@@ -215,6 +216,7 @@ fn main() -> Result<()> {
                 Screen::SessionList => {
                     session_list.refresh_states();
                     session_list.refresh_preview();
+                    session_list.tick_splash();
                 }
                 Screen::Launching => {
                     if let Some(ref mut state) = launch_state {
