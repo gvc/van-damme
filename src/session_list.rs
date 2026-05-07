@@ -101,7 +101,6 @@ impl SessionList {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> SessionListAction {
-        self.last_activity = std::time::Instant::now();
         if let Some(ref name) = self.confirm_kill.clone() {
             self.confirm_kill = None;
             match key.code {
@@ -116,27 +115,36 @@ impl SessionList {
         }
 
         match key.code {
-            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => SessionListAction::Quit,
+            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                SessionListAction::Quit
+            }
             KeyCode::Char('n') => SessionListAction::NewTask,
             KeyCode::Char('t') => SessionListAction::NewTmuxSession,
             KeyCode::Up | KeyCode::Char('k') => {
+                self.last_activity = std::time::Instant::now();
                 self.list.move_up();
                 SessionListAction::None
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                self.last_activity = std::time::Instant::now();
                 self.list.move_down();
                 SessionListAction::None
             }
-            KeyCode::Enter | KeyCode::Char('a') => self.attach_selected(),
+            KeyCode::Enter | KeyCode::Char('a') => {
+                self.last_activity = std::time::Instant::now();
+                self.attach_selected()
+            }
             KeyCode::Char('x') => {
                 self.request_kill_selected();
                 SessionListAction::None
             }
             KeyCode::Char('z') => {
+                self.last_activity = std::time::Instant::now();
                 self.list.toggle_collapse_selected(group_key);
                 SessionListAction::None
             }
             KeyCode::Char('Z') => {
+                self.last_activity = std::time::Instant::now();
                 self.list.toggle_collapse_all(group_key);
                 SessionListAction::None
             }
