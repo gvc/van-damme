@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -106,7 +106,7 @@ impl SessionList {
         }
 
         match key.code {
-            KeyCode::Char('q') => SessionListAction::Quit,
+            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => SessionListAction::Quit,
             KeyCode::Char('n') => SessionListAction::NewTask,
             KeyCode::Char('t') => SessionListAction::NewTmuxSession,
             KeyCode::Up | KeyCode::Char('k') => {
@@ -345,7 +345,7 @@ impl SessionList {
                     Style::default().fg(theme::GRAY_DIM),
                 )),
                 Line::from(Span::styled(
-                    "n:new task · t:tmux · q:quit",
+                    "n:new task · t:tmux · Ctrl+Q:quit",
                     Style::default().fg(theme::GRAY_DIM),
                 )),
             ])
@@ -690,10 +690,22 @@ mod tests {
     }
 
     #[test]
-    fn test_q_quits() {
+    fn test_ctrl_q_quits() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        let action = list.handle_key(KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        assert_eq!(action, SessionListAction::Quit);
+    }
+
+    #[test]
+    fn test_q_without_ctrl_does_not_quit() {
         let mut list = SessionList::new(sample_grouped_sessions());
         let action = list.handle_key(key(KeyCode::Char('q')));
-        assert_eq!(action, SessionListAction::Quit);
+        assert_eq!(action, SessionListAction::None);
     }
 
     #[test]
