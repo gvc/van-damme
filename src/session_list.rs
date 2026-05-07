@@ -9,6 +9,7 @@ use ratatui::{
 
 use crate::grouped_list::{GroupedList, VisibleRow};
 use crate::session::{SessionRecord, SessionState};
+use crate::splash::SplashState;
 use crate::theme;
 use crate::tmux;
 
@@ -33,6 +34,8 @@ pub struct SessionList {
     card_scroll_offset: usize,
     preview_content: Option<String>,
     preview_summary: Option<tmux::SessionSummary>,
+    splash: SplashState,
+    last_activity: std::time::Instant,
 }
 
 impl SessionList {
@@ -44,7 +47,13 @@ impl SessionList {
             card_scroll_offset: 0,
             preview_content: None,
             preview_summary: None,
+            splash: SplashState::new(),
+            last_activity: std::time::Instant::now(),
         }
+    }
+
+    pub fn tick_splash(&mut self) {
+        self.splash.tick();
     }
 
     #[allow(dead_code)]
@@ -92,6 +101,7 @@ impl SessionList {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> SessionListAction {
+        self.last_activity = std::time::Instant::now();
         if let Some(ref name) = self.confirm_kill.clone() {
             self.confirm_kill = None;
             match key.code {
@@ -354,7 +364,7 @@ impl SessionList {
         );
     }
 
-    fn draw_preview_panel(&self, frame: &mut Frame, area: Rect) {
+    fn draw_preview_panel(&mut self, frame: &mut Frame, area: Rect) {
         if area.width < 4 {
             return;
         }
@@ -415,7 +425,10 @@ impl SessionList {
         }
 
         let content_area = chunks[1];
-        if let Some(ref content) = self.preview_content {
+        let idle = self.last_activity.elapsed().as_secs() >= 60;
+        if !idle
+            && let Some(ref content) = self.preview_content
+        {
             let lines: Vec<Line> = content
                 .lines()
                 .map(|l| Line::raw(l.trim_end().to_string()))
@@ -428,7 +441,7 @@ impl SessionList {
                 content_area,
             );
         } else {
-            draw_ascii_art(frame, content_area);
+            self.splash.draw(frame, content_area);
         }
     }
 }
@@ -525,72 +538,6 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
     );
 }
 
-fn draw_ascii_art(frame: &mut Frame, area: Rect) {
-    if area.height < 3 || area.width < 10 {
-        return;
-    }
-
-    const VAN_ART: &[&str] = &[
-        " ██╗   ██╗ █████╗ ███╗   ██╗",
-        " ██║   ██║██╔══██╗████╗  ██║",
-        " ██║   ██║███████║██╔██╗ ██║",
-        " ╚██╗ ██╔╝██╔══██║██║╚██╗██║",
-        "  ╚████╔╝ ██║  ██║██║ ╚████║",
-        "   ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═══╝",
-    ];
-    const DAMME_ART: &[&str] = &[
-        " ██████╗  █████╗ ███╗   ███╗███╗   ███╗███████╗",
-        " ██╔══██╗██╔══██╗████╗ ████║████╗ ████║██╔════╝",
-        " ██║  ██║███████║██╔████╔██║██╔████╔██║█████╗  ",
-        " ██║  ██║██╔══██║██║╚██╔╝██║██║╚██╔╝██║██╔══╝  ",
-        " ██████╔╝██║  ██║██║ ╚═╝ ██║██║ ╚═╝ ██║███████╗",
-        " ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝╚══════╝",
-    ];
-    const TAGLINE: &str = "tmux × claude session manager";
-
-    let total_h = (VAN_ART.len() + 1 + DAMME_ART.len() + 2) as u16;
-    let start_y = area.y + area.height.saturating_sub(total_h) / 2;
-    let mut y = start_y;
-
-    for line in VAN_ART {
-        if y >= area.y + area.height {
-            break;
-        }
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                *line,
-                Style::default().fg(theme::ORANGE_BRIGHT),
-            ))
-            .alignment(Alignment::Center),
-            Rect::new(area.x, y, area.width, 1),
-        );
-        y += 1;
-    }
-
-    y += 1;
-
-    for line in DAMME_ART {
-        if y >= area.y + area.height {
-            break;
-        }
-        frame.render_widget(
-            Paragraph::new(Span::styled(*line, Style::default().fg(theme::ORANGE)))
-                .alignment(Alignment::Center),
-            Rect::new(area.x, y, area.width, 1),
-        );
-        y += 1;
-    }
-
-    y += 2;
-
-    if y < area.y + area.height {
-        frame.render_widget(
-            Paragraph::new(Span::styled(TAGLINE, Style::default().fg(theme::GRAY_DIM)))
-                .alignment(Alignment::Center),
-            Rect::new(area.x, y, area.width, 1),
-        );
-    }
-}
 
 fn shorten_path(path: &str, max_len: usize) -> String {
     if max_len == 0 {

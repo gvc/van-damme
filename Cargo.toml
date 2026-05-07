@@ -13,6 +13,7 @@ dirs = "6"
 tui-input = "0.11"
 uuid = { version = "1", features = ["v4"] }
 libc = "0.2"
+fastrand = "2"
 
 [[bin]]
 name = "vd"

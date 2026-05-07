@@ -980,6 +980,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "dirs",
+ "fastrand",
  "libc",
  "ratatui",
  "serde",
