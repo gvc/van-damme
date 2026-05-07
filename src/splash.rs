@@ -21,6 +21,9 @@ const COL_DUST: Color = Color::Rgb(0xb4, 0x8c, 0x3c);
 const COL_SKY: Color = Color::Rgb(0x14, 0x1c, 0x26);
 const COL_STAR: Color = Color::Rgb(0x50, 0x60, 0x70);
 const COL_GRASS: Color = Color::Rgb(0x2a, 0x50, 0x28);
+const COL_TREE_GREEN: Color = Color::Rgb(0x28, 0x6a, 0x24);
+const COL_TREE_DYING: Color = Color::Rgb(0x5a, 0x40, 0x18);
+const COL_TRUNK: Color = Color::Rgb(0x4a, 0x30, 0x14);
 
 // ── terrain types ─────────────────────────────────────────────────────────────
 
@@ -113,6 +116,22 @@ struct Tunnel {
     end_col: u16,
 }
 
+// 5-minute loop at 80ms = 3750 ticks total per tree
+// Growing: 3 stages × 333 ticks = ~1000; Mature: 1500; Dying: 750; Dead: 500
+#[derive(Debug, Clone)]
+enum TreePhase {
+    Growing { stage: u8, ticks: u16 }, // stage 0/1/2 = sapling/young/full
+    Mature { ticks: u16 },
+    Dying { ticks: u16 },
+    Dead { ttl: u16 },
+}
+
+#[derive(Debug, Clone)]
+struct Tree {
+    col: u16,       // centre column on surface_row
+    phase: TreePhase,
+}
+
 // ── main state ────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -132,6 +151,7 @@ pub struct SplashState {
     dwarves: Vec<Dwarf>,
     mushrooms: Vec<Mushroom>,
     dust: Vec<DustParticle>,
+    trees: Vec<Tree>,
     pub tick_count: u64,
 }
 
@@ -153,6 +173,7 @@ impl SplashState {
             dwarves: Vec::new(),
             mushrooms: Vec::new(),
             dust: Vec::new(),
+            trees: Vec::new(),
             tick_count: 0,
         }
     }
@@ -300,6 +321,39 @@ impl SplashState {
                 });
             }
         }
+
+        // ── trees ─────────────────────────────────────────────────────────────
+        self.trees.clear();
+        if self.sky_rows >= 2 && width >= 10 {
+            let n_trees = fastrand::u16(3..=6) as usize;
+            let min_spacing: u16 = (width / (n_trees as u16 + 1)).max(4);
+            let mut attempts = 0usize;
+            while self.trees.len() < n_trees && attempts < 60 {
+                attempts += 1;
+                let col = fastrand::u16(1..width.saturating_sub(1));
+                let too_close = self.trees.iter().any(|t| t.col.abs_diff(col) < min_spacing);
+                if too_close {
+                    continue;
+                }
+                // stagger initial phase so trees don't all cycle together
+                let phase_offset = fastrand::u16(0..3750);
+                let phase = Self::tree_phase_from_offset(phase_offset);
+                self.trees.push(Tree { col, phase });
+            }
+        }
+    }
+
+    fn tree_phase_from_offset(offset: u16) -> TreePhase {
+        match offset {
+            0..=999 => {
+                let stage = (offset / 333).min(2) as u8;
+                let ticks = offset % 333;
+                TreePhase::Growing { stage, ticks }
+            }
+            1000..=2499 => TreePhase::Mature { ticks: offset - 1000 },
+            2500..=3249 => TreePhase::Dying { ticks: offset - 2500 },
+            _ => TreePhase::Dead { ttl: offset - 3250 },
+        }
     }
 
     pub fn tick(&mut self) {
@@ -405,6 +459,44 @@ impl SplashState {
             if m.pulse_phase > std::f32::consts::TAU {
                 m.pulse_phase -= std::f32::consts::TAU;
             }
+        }
+
+        // ── trees ─────────────────────────────────────────────────────────────
+        for tree in &mut self.trees {
+            tree.phase = match tree.phase {
+                TreePhase::Growing { stage, ticks } => {
+                    if ticks + 1 >= 333 {
+                        if stage < 2 {
+                            TreePhase::Growing { stage: stage + 1, ticks: 0 }
+                        } else {
+                            TreePhase::Mature { ticks: 0 }
+                        }
+                    } else {
+                        TreePhase::Growing { stage, ticks: ticks + 1 }
+                    }
+                }
+                TreePhase::Mature { ticks } => {
+                    if ticks + 1 >= 1500 {
+                        TreePhase::Dying { ticks: 0 }
+                    } else {
+                        TreePhase::Mature { ticks: ticks + 1 }
+                    }
+                }
+                TreePhase::Dying { ticks } => {
+                    if ticks + 1 >= 750 {
+                        TreePhase::Dead { ttl: 0 }
+                    } else {
+                        TreePhase::Dying { ticks: ticks + 1 }
+                    }
+                }
+                TreePhase::Dead { ttl } => {
+                    if ttl + 1 >= 500 {
+                        TreePhase::Growing { stage: 0, ticks: 0 }
+                    } else {
+                        TreePhase::Dead { ttl: ttl + 1 }
+                    }
+                }
+            };
         }
     }
 
@@ -669,6 +761,11 @@ impl SplashState {
             }
         }
 
+        // trees
+        for tree in &self.trees {
+            self.draw_tree(&mut grid, w, area.height, tree);
+        }
+
         // write to terminal buffer
         let buf = frame.buffer_mut();
         for row in 0..h {
@@ -776,6 +873,73 @@ impl SplashState {
                     .alignment(Alignment::Center),
                 Rect::new(area.x, y, area.width, 1),
             );
+        }
+    }
+
+    fn draw_tree(&self, grid: &mut Vec<GridCell>, w: usize, height: u16, tree: &Tree) {
+        let surface = self.surface_row;
+        if surface == 0 || tree.col >= self.width {
+            return;
+        }
+
+        let (stage, canopy_color, show_trunk) = match tree.phase {
+            TreePhase::Dead { .. } => return,
+            TreePhase::Growing { stage, .. } => (stage, COL_TREE_GREEN, stage >= 1),
+            TreePhase::Mature { .. } => (2u8, COL_TREE_GREEN, true),
+            TreePhase::Dying { ticks } => {
+                let t = ticks as f32 / 750.0;
+                let col = Self::lerp_color(COL_TREE_GREEN, COL_TREE_DYING, t);
+                (2u8, col, true)
+            }
+        };
+
+        // stage 0: 1-cell canopy, no trunk
+        // stage 1: 1-cell trunk + 1-cell canopy
+        // stage 2: 2-cell trunk + 3-wide canopy top
+        let col = tree.col;
+
+        let set = |grid: &mut Vec<GridCell>, c: u16, r: u16, ch: char, fg: Color| {
+            if c < self.width && r < height {
+                let idx = r as usize * w + c as usize;
+                grid[idx].ch = ch;
+                grid[idx].fg = fg;
+            }
+        };
+
+        match stage {
+            0 => {
+                // sapling: single ♣ just above surface
+                if surface >= 1 {
+                    set(grid, col, surface - 1, '♣', canopy_color);
+                }
+            }
+            1 => {
+                // young: trunk + canopy
+                if surface >= 2 {
+                    set(grid, col, surface - 1, '│', COL_TRUNK);
+                    set(grid, col, surface - 2, '♣', canopy_color);
+                } else if surface >= 1 {
+                    set(grid, col, surface - 1, '♣', canopy_color);
+                }
+            }
+            _ => {
+                // full: 2-cell trunk, 3-wide canopy
+                if surface >= 1 && show_trunk {
+                    set(grid, col, surface - 1, '│', COL_TRUNK);
+                }
+                if surface >= 2 && show_trunk {
+                    set(grid, col, surface - 2, '│', COL_TRUNK);
+                }
+                if surface >= 3 {
+                    set(grid, col.saturating_sub(1), surface - 3, '♣', canopy_color);
+                    set(grid, col, surface - 3, '♣', canopy_color);
+                    if col + 1 < self.width {
+                        set(grid, col + 1, surface - 3, '♣', canopy_color);
+                    }
+                } else if surface >= 1 {
+                    set(grid, col, surface - 1, '♣', canopy_color);
+                }
+            }
         }
     }
 
