@@ -24,6 +24,9 @@ const COL_GRASS: Color = Color::Rgb(0x2a, 0x50, 0x28);
 const COL_TREE_GREEN: Color = Color::Rgb(0x28, 0x6a, 0x24);
 const COL_TREE_DYING: Color = Color::Rgb(0x5a, 0x40, 0x18);
 const COL_TRUNK: Color = Color::Rgb(0x4a, 0x30, 0x14);
+const COL_ANIMAL: Color = Color::Rgb(0x8a, 0x70, 0x44);
+const COL_BIRD: Color = Color::Rgb(0x70, 0x80, 0x90);
+const COL_CLOUD: Color = Color::Rgb(0x38, 0x44, 0x54);
 
 // ── terrain types ─────────────────────────────────────────────────────────────
 
@@ -116,6 +119,35 @@ struct Tunnel {
     end_col: u16,
 }
 
+// Animals roam the surface above-ground
+#[derive(Debug, Clone)]
+struct Animal {
+    col: u16,
+    dir: i8,
+    ch: char,
+    move_counter: u8,
+    move_rate: u8, // ticks per step (higher = slower)
+}
+
+// Birds drift through the sky
+#[derive(Debug, Clone)]
+struct Bird {
+    col: u16,
+    row: u16,
+    dir: i8,
+    move_counter: u8,
+}
+
+// Clouds drift slowly in upper sky
+#[derive(Debug, Clone)]
+struct Cloud {
+    col: i32, // signed so it can drift off-screen and wrap
+    row: u16,
+    width: u16,
+    move_counter: u8,
+    move_rate: u8,
+}
+
 // 5-minute loop at 80ms = 3750 ticks total per tree
 // Growing: 3 stages × 333 ticks = ~1000; Mature: 1500; Dying: 750; Dead: 500
 #[derive(Debug, Clone)]
@@ -152,6 +184,9 @@ pub struct SplashState {
     mushrooms: Vec<Mushroom>,
     dust: Vec<DustParticle>,
     trees: Vec<Tree>,
+    animals: Vec<Animal>,
+    birds: Vec<Bird>,
+    clouds: Vec<Cloud>,
     pub tick_count: u64,
 }
 
@@ -174,6 +209,9 @@ impl SplashState {
             mushrooms: Vec::new(),
             dust: Vec::new(),
             trees: Vec::new(),
+            animals: Vec::new(),
+            birds: Vec::new(),
+            clouds: Vec::new(),
             tick_count: 0,
         }
     }
@@ -230,6 +268,11 @@ impl SplashState {
         }
         // sort by row for connector logic
         self.tunnels.sort_by_key(|t| t.row);
+
+        // clear surface entities rebuilt below
+        self.animals.clear();
+        self.birds.clear();
+        self.clouds.clear();
 
         // ── stars ─────────────────────────────────────────────────────────────
         self.stars.clear();
@@ -339,6 +382,47 @@ impl SplashState {
                 let phase_offset = fastrand::u16(0..3750);
                 let phase = Self::tree_phase_from_offset(phase_offset);
                 self.trees.push(Tree { col, phase });
+            }
+        }
+
+        // ── animals ───────────────────────────────────────────────────────────
+        // DF fauna chars: d=dog/deer, c=cat, b=boar, h=horse, r=rabbit
+        let animal_chars = ['d', 'c', 'b', 'h', 'r', 'f'];
+        let n_animals = fastrand::u16(2..=4) as usize;
+        for _ in 0..n_animals {
+            let col = fastrand::u16(0..width);
+            let dir: i8 = if fastrand::bool() { 1 } else { -1 };
+            let ch = animal_chars[fastrand::usize(0..animal_chars.len())];
+            let move_rate = fastrand::u8(2..=5);
+            self.animals.push(Animal { col, dir, ch, move_counter: 0, move_rate });
+        }
+
+        // ── birds ─────────────────────────────────────────────────────────────
+        if self.sky_rows >= 3 {
+            let n_birds = fastrand::u16(2..=5) as usize;
+            for _ in 0..n_birds {
+                let col = fastrand::u16(0..width);
+                let row = fastrand::u16(0..self.sky_rows.saturating_sub(1).max(1));
+                let dir: i8 = if fastrand::bool() { 1 } else { -1 };
+                self.birds.push(Bird { col, row, dir, move_counter: fastrand::u8(0..4) });
+            }
+        }
+
+        // ── clouds ────────────────────────────────────────────────────────────
+        if self.sky_rows >= 2 {
+            let n_clouds = fastrand::u16(2..=4) as usize;
+            for _ in 0..n_clouds {
+                let cloud_width = fastrand::u16(4..=10);
+                let col = fastrand::i32(0..width as i32);
+                let row = fastrand::u16(0..self.sky_rows.saturating_sub(1).max(1));
+                let move_rate = fastrand::u8(6..=15);
+                self.clouds.push(Cloud {
+                    col,
+                    row,
+                    width: cloud_width,
+                    move_counter: 0,
+                    move_rate,
+                });
             }
         }
     }
@@ -458,6 +542,61 @@ impl SplashState {
             m.pulse_phase += 0.15;
             if m.pulse_phase > std::f32::consts::TAU {
                 m.pulse_phase -= std::f32::consts::TAU;
+            }
+        }
+
+        // ── animals ───────────────────────────────────────────────────────────
+        for animal in &mut self.animals {
+            animal.move_counter += 1;
+            if animal.move_counter >= animal.move_rate {
+                animal.move_counter = 0;
+                // occasionally change direction
+                if fastrand::u8(0..20) == 0 {
+                    animal.dir = -animal.dir;
+                }
+                let next = animal.col as i32 + animal.dir as i32;
+                if next < 0 || next >= self.width as i32 {
+                    animal.dir = -animal.dir;
+                } else {
+                    animal.col = next as u16;
+                }
+            }
+        }
+
+        // ── birds ─────────────────────────────────────────────────────────────
+        for bird in &mut self.birds {
+            bird.move_counter += 1;
+            if bird.move_counter >= 3 {
+                bird.move_counter = 0;
+                // birds wrap around screen edges
+                let next = bird.col as i32 + bird.dir as i32;
+                if next < 0 {
+                    bird.col = self.width.saturating_sub(1);
+                } else if next >= self.width as i32 {
+                    bird.col = 0;
+                } else {
+                    bird.col = next as u16;
+                }
+                // small vertical drift
+                if fastrand::u8(0..30) == 0 && self.sky_rows > 1 {
+                    let new_row = bird.row as i32 + if fastrand::bool() { 1 } else { -1 };
+                    if new_row >= 0 && new_row < self.sky_rows as i32 - 1 {
+                        bird.row = new_row as u16;
+                    }
+                }
+            }
+        }
+
+        // ── clouds ────────────────────────────────────────────────────────────
+        for cloud in &mut self.clouds {
+            cloud.move_counter += 1;
+            if cloud.move_counter >= cloud.move_rate {
+                cloud.move_counter = 0;
+                cloud.col -= 1; // clouds always drift left (DF wind)
+                // wrap when fully off left edge
+                if cloud.col + (cloud.width as i32) < 0 {
+                    cloud.col = self.width as i32;
+                }
             }
         }
 
@@ -761,9 +900,74 @@ impl SplashState {
             }
         }
 
+        // clouds (behind everything else in sky)
+        for cloud in &self.clouds {
+            if cloud.row >= area.height {
+                continue;
+            }
+            // two-row cloud: ░▒░░▒ on top, ▒▓▒▓▒ on bottom
+            let cloud_top = ['░', '▒', '░', '▒', '░'];
+            let cloud_bot = ['▒', '░', '▒', '░', '▒'];
+            for i in 0..cloud.width {
+                let cx = cloud.col + i as i32;
+                if cx < 0 || cx >= area.width as i32 {
+                    continue;
+                }
+                let cx = cx as u16;
+                // top row of cloud
+                if cloud.row < area.height {
+                    let idx = cloud.row as usize * w + cx as usize;
+                    if grid[idx].kind == CellKind::Sky {
+                        grid[idx].ch = cloud_top[i as usize % cloud_top.len()];
+                        grid[idx].fg = COL_CLOUD;
+                    }
+                }
+                // bottom row of cloud (one below)
+                let bot_row = cloud.row + 1;
+                if bot_row < area.height && bot_row < self.sky_rows {
+                    let idx = bot_row as usize * w + cx as usize;
+                    if grid[idx].kind == CellKind::Sky {
+                        grid[idx].ch = cloud_bot[i as usize % cloud_bot.len()];
+                        grid[idx].fg = COL_CLOUD;
+                    }
+                }
+            }
+        }
+
         // trees
         for tree in &self.trees {
             self.draw_tree(&mut grid, w, area.height, tree);
+        }
+
+        // animals on surface
+        let surface = self.surface_row;
+        for animal in &self.animals {
+            if surface == 0 || animal.col >= area.width {
+                continue;
+            }
+            let row = surface.saturating_sub(1);
+            if row >= area.height {
+                continue;
+            }
+            let idx = row as usize * w + animal.col as usize;
+            // only place on sky/surface-adjacent cells (don't overwrite tree trunks)
+            if grid[idx].kind == CellKind::Sky || grid[idx].kind == CellKind::Surface {
+                grid[idx].ch = animal.ch;
+                grid[idx].fg = COL_ANIMAL;
+            }
+        }
+
+        // birds in sky
+        for bird in &self.birds {
+            if bird.row >= area.height || bird.col >= area.width {
+                continue;
+            }
+            let idx = bird.row as usize * w + bird.col as usize;
+            if grid[idx].kind == CellKind::Sky {
+                // direction: left='\' right='/'  DF uses v for perched, ' for flying
+                grid[idx].ch = if bird.dir > 0 { '\'' } else { '`' };
+                grid[idx].fg = COL_BIRD;
+            }
         }
 
         // write to terminal buffer
@@ -923,21 +1127,37 @@ impl SplashState {
                 }
             }
             _ => {
-                // full: 2-cell trunk, 3-wide canopy
+                // full: 2-cell trunk, 5-wide bottom canopy, 3-wide top canopy
                 if surface >= 1 && show_trunk {
                     set(grid, col, surface - 1, '│', COL_TRUNK);
                 }
                 if surface >= 2 && show_trunk {
                     set(grid, col, surface - 2, '│', COL_TRUNK);
                 }
+                // wide bottom canopy row
                 if surface >= 3 {
-                    set(grid, col.saturating_sub(1), surface - 3, '♣', canopy_color);
-                    set(grid, col, surface - 3, '♣', canopy_color);
-                    if col + 1 < self.width {
-                        set(grid, col + 1, surface - 3, '♣', canopy_color);
+                    for dc in -2i16..=2 {
+                        let c = col.wrapping_add_signed(dc);
+                        if c < self.width {
+                            set(grid, c, surface - 3, '♣', canopy_color);
+                        }
                     }
-                } else if surface >= 1 {
-                    set(grid, col, surface - 1, '♣', canopy_color);
+                }
+                // narrow top canopy row
+                if surface >= 4 {
+                    for dc in -1i16..=1 {
+                        let c = col.wrapping_add_signed(dc);
+                        if c < self.width {
+                            set(grid, c, surface - 4, '♣', canopy_color);
+                        }
+                    }
+                }
+                // peak
+                if surface >= 5 {
+                    set(grid, col, surface - 5, '▲', canopy_color);
+                }
+                if surface < 3 {
+                    set(grid, col, surface.saturating_sub(1), '♣', canopy_color);
                 }
             }
         }
