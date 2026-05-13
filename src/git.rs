@@ -43,7 +43,15 @@ pub fn prepare_worktree(directory: &str, on_step: &dyn Fn(&str)) -> Result<GitUn
     run_git(directory, &["checkout", &main_branch])?;
 
     on_step(&format!("Pulling latest from origin/{main_branch}..."));
-    run_git(directory, &["pull", "origin", &main_branch])?;
+    // Best-effort: skip pull when there's no remote origin
+    let _ = Command::new("git")
+        .args(["pull", "origin", &main_branch])
+        .current_dir(directory)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 
     Ok(GitUndo::CheckoutBranch(original))
 }
@@ -435,6 +443,19 @@ mod tests {
             .current_dir(repo_dir)
             .output()
             .unwrap();
+    }
+
+    #[test]
+    fn test_prepare_worktree_no_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+        let dir = tmp.path().to_str().unwrap();
+
+        // No remote added — should succeed without failing on pull
+        prepare_worktree(dir, &|_| {}).unwrap();
+
+        assert_eq!(current_branch(tmp.path()), "main");
+        assert!(!has_uncommitted_changes(dir).unwrap());
     }
 
     #[test]
