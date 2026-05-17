@@ -178,46 +178,7 @@ fn create_session_with(
     Ok(TmuxSession { session_id })
 }
 
-/// Add a terminal split pane to the right of Claude in an existing tmux session.
-/// Called when Claude's SessionStart hook fires, so the worktree is guaranteed to exist.
-/// `window_name` is the tmux window name (e.g. "claude", "cc") — must match what was
-/// used when creating the session.
-pub fn setup_editor_window(session_name: &str, directory: &str, window_name: &str) -> Result<()> {
-    setup_editor_window_with(&ProcessRunner, session_name, directory, window_name)
-}
-
-fn setup_editor_window_with(
-    runner: &dyn CommandRunner,
-    session_name: &str,
-    directory: &str,
-    window_name: &str,
-) -> Result<()> {
-    let abs_dir = std::path::Path::new(directory)
-        .canonicalize()
-        .map_err(|e| eyre!("Cannot resolve directory '{directory}': {e}"))?
-        .to_string_lossy()
-        .to_string();
-
-    let worktree_dir = format!("{abs_dir}/.claude/worktrees/{session_name}");
-    let worktree_path = std::path::Path::new(&worktree_dir);
-
-    let pane_dir = if worktree_path.exists() {
-        &worktree_dir
-    } else {
-        &abs_dir
-    };
-
-    let target = format!("{session_name}:{window_name}");
-
-    runner.run(&["split-window", "-h", "-t", &target, "-c", pane_dir])?;
-    runner.run(&["split-window", "-v", "-t", &target, "-c", pane_dir])?;
-    runner.run(&["select-pane", "-L", "-t", &target])?;
-
-    Ok(())
-}
-
-/// Create a plain tmux session (no Claude) with a single window and a vertical split.
-/// Both panes start in the given directory.
+/// Create a plain tmux session (no Claude) with a single window.
 pub fn create_plain_session(name: &str, dir: &str) -> Result<TmuxSession> {
     create_plain_session_with(&ProcessRunner, name, dir)
 }
@@ -232,9 +193,6 @@ fn create_plain_session_with(runner: &dyn CommandRunner, name: &str, dir: &str) 
     runner
         .run(&["new-session", "-d", "-s", name, "-c", &abs_dir])
         .map_err(|_| eyre!("Failed to create tmux session '{name}'"))?;
-
-    runner.run(&["split-window", "-h", "-t", name, "-c", &abs_dir])?;
-    runner.run(&["select-pane", "-L", "-t", name])?;
 
     let stdout = runner
         .run_capturing(&["display-message", "-t", name, "-p", "#{session_id}"])

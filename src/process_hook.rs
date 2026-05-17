@@ -1,5 +1,4 @@
 use crate::session::{SessionDb, SessionState, default_db_path};
-use crate::tmux;
 use color_eyre::Result;
 use serde::Deserialize;
 use std::fs::{self, OpenOptions};
@@ -48,22 +47,6 @@ fn run_inner() -> Result<()> {
     {
         s.state = state;
         let _ = db.save();
-    }
-
-    if event.hook_event_name == "SessionStart"
-        && let Ok(path) = default_db_path()
-        && let Ok(db) = SessionDb::open(&path)
-        && let Some(record) = db
-            .sessions
-            .iter()
-            .find(|s| s.claude_session_id.as_deref() == Some(&event.session_id))
-    {
-        let window_name = tmux::window_name_from_command(&record.claude_command);
-        let _ = tmux::setup_editor_window(
-            &record.tmux_session_name,
-            &record.directory,
-            window_name,
-        );
     }
 
     Ok(())
