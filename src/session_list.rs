@@ -29,6 +29,9 @@ pub enum SessionListAction {
 #[derive(Debug)]
 pub struct SessionList {
     list: GroupedList<SessionRecord>,
+    all_sessions: Vec<SessionRecord>,
+    search_active: bool,
+    search_query: String,
     pub status_message: Option<String>,
     confirm_kill: Option<String>,
     card_scroll_offset: usize,
@@ -41,7 +44,10 @@ pub struct SessionList {
 impl SessionList {
     pub fn new(sessions: Vec<SessionRecord>) -> Self {
         Self {
-            list: GroupedList::new(sessions, group_key),
+            list: GroupedList::new(sessions.clone(), group_key),
+            all_sessions: sessions,
+            search_active: false,
+            search_query: String::new(),
             status_message: None,
             confirm_kill: None,
             card_scroll_offset: 0,
@@ -71,12 +77,40 @@ impl SessionList {
                     .into_iter()
                     .filter(|s| tmux::session_exists(&s.tmux_session_name).unwrap_or(false))
                     .collect();
-                self.list.replace_items(alive, group_key);
+                self.all_sessions = alive;
+                self.apply_filter();
             }
             Err(e) => {
                 self.status_message = Some(format!("Error loading sessions: {e}"));
             }
         }
+    }
+
+    fn apply_filter(&mut self) {
+        let filtered = if self.search_query.is_empty() {
+            self.all_sessions.clone()
+        } else {
+            let q = self.search_query.to_lowercase();
+            self.all_sessions
+                .iter()
+                .filter(|s| shorten_path(&s.directory, usize::MAX).to_lowercase().contains(&q))
+                .cloned()
+                .collect()
+        };
+        self.list.replace_items(filtered, group_key);
+        self.card_scroll_offset = 0;
+    }
+
+    fn enter_search(&mut self) {
+        self.search_active = true;
+        self.search_query.clear();
+        self.status_message = None;
+    }
+
+    fn exit_search(&mut self) {
+        self.search_active = false;
+        self.search_query.clear();
+        self.apply_filter();
     }
 
     pub fn refresh_states(&mut self) {
@@ -86,6 +120,14 @@ impl SessionList {
         else {
             return;
         };
+        for session in self.all_sessions.iter_mut() {
+            if let Some(updated) = db_sessions
+                .iter()
+                .find(|s: &&SessionRecord| s.tmux_session_name == session.tmux_session_name)
+            {
+                session.state = updated.state.clone();
+            }
+        }
         for session in self.list.items_mut() {
             if let Some(updated) = db_sessions
                 .iter()
@@ -114,9 +156,17 @@ impl SessionList {
             return SessionListAction::None;
         }
 
+        if self.search_active {
+            return self.handle_search_key(key);
+        }
+
         match key.code {
             KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 SessionListAction::Quit
+            }
+            KeyCode::Char('/') => {
+                self.enter_search();
+                SessionListAction::None
             }
             KeyCode::Char('n') => SessionListAction::NewTask,
             KeyCode::Char('t') => SessionListAction::NewTmuxSession,
@@ -146,6 +196,45 @@ impl SessionList {
             KeyCode::Char('Z') => {
                 self.last_activity = std::time::Instant::now();
                 self.list.toggle_collapse_all(group_key);
+                SessionListAction::None
+            }
+            _ => SessionListAction::None,
+        }
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) -> SessionListAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.exit_search();
+                SessionListAction::None
+            }
+            KeyCode::Enter => {
+                let action = self.attach_selected();
+                self.exit_search();
+                action
+            }
+            KeyCode::Backspace => {
+                if self.search_query.is_empty() {
+                    self.exit_search();
+                } else {
+                    self.search_query.pop();
+                    self.apply_filter();
+                }
+                SessionListAction::None
+            }
+            KeyCode::Up => {
+                self.last_activity = std::time::Instant::now();
+                self.list.move_up();
+                SessionListAction::None
+            }
+            KeyCode::Down => {
+                self.last_activity = std::time::Instant::now();
+                self.list.move_down();
+                SessionListAction::None
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+                self.search_query.push(c);
+                self.apply_filter();
                 SessionListAction::None
             }
             _ => SessionListAction::None,
@@ -356,20 +445,38 @@ impl SessionList {
             }
         }
 
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "j/k:navigate · a:attach · x:kill · z:collapse · Z:all",
-                    Style::default().fg(theme::GRAY_DIM),
-                )),
-                Line::from(Span::styled(
-                    "n:new task · t:tmux · Ctrl+Q:quit",
-                    Style::default().fg(theme::GRAY_DIM),
-                )),
-            ])
-            .alignment(Alignment::Center),
-            hints_area,
-        );
+        if self.search_active {
+            let query_line = format!("/ {}_", self.search_query);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        query_line,
+                        Style::default().fg(theme::ORANGE_BRIGHT),
+                    )),
+                    Line::from(Span::styled(
+                        "Esc:cancel · Enter:select · ↑/↓:navigate",
+                        Style::default().fg(theme::GRAY_DIM),
+                    )),
+                ])
+                .alignment(Alignment::Center),
+                hints_area,
+            );
+        } else {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        "j/k:navigate · a:attach · x:kill · z:collapse · Z:all",
+                        Style::default().fg(theme::GRAY_DIM),
+                    )),
+                    Line::from(Span::styled(
+                        "/:search · n:new task · t:tmux · Ctrl+Q:quit",
+                        Style::default().fg(theme::GRAY_DIM),
+                    )),
+                ])
+                .alignment(Alignment::Center),
+                hints_area,
+            );
+        }
     }
 
     fn draw_preview_panel(&mut self, frame: &mut Frame, area: Rect) {
@@ -833,5 +940,122 @@ mod tests {
             None => format!("[{}]", session.claude_command),
         };
         assert_eq!(tag, "[claude | claude-sonnet-4-6]");
+    }
+
+    #[test]
+    fn test_slash_enters_search_mode() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        assert!(list.search_active);
+        assert!(list.search_query.is_empty());
+    }
+
+    #[test]
+    fn test_search_chars_build_query_and_filter() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        list.handle_key(key(KeyCode::Char('p')));
+        list.handle_key(key(KeyCode::Char('r')));
+        list.handle_key(key(KeyCode::Char('o')));
+        list.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(list.search_query, "proj");
+        // all 3 sessions are under /proj/*, so all still visible
+        assert_eq!(list.list.items().len(), 3);
+    }
+
+    #[test]
+    fn test_search_filters_to_matching_directory() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        // /proj/a contains alpha and beta; /proj/b contains gamma
+        list.handle_key(key(KeyCode::Char('b')));
+        // only /proj/b matches "b" (also /proj/a has 'a' not 'b', but "/proj/b" contains 'b')
+        // Actually "/proj/a" doesn't contain 'b' but "/proj/b" does
+        assert_eq!(list.list.items().len(), 1);
+        assert_eq!(list.list.items()[0].tmux_session_name, "gamma");
+    }
+
+    #[test]
+    fn test_search_no_match_shows_empty() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        list.handle_key(key(KeyCode::Char('x')));
+        list.handle_key(key(KeyCode::Char('x')));
+        list.handle_key(key(KeyCode::Char('x')));
+        assert!(list.list.is_empty());
+    }
+
+    #[test]
+    fn test_search_esc_restores_full_list() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        list.handle_key(key(KeyCode::Char('b')));
+        assert_eq!(list.list.items().len(), 1);
+        list.handle_key(key(KeyCode::Esc));
+        assert!(!list.search_active);
+        assert_eq!(list.list.items().len(), 3);
+    }
+
+    #[test]
+    fn test_search_backspace_removes_char() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        list.handle_key(key(KeyCode::Char('b')));
+        list.handle_key(key(KeyCode::Backspace));
+        assert_eq!(list.search_query, "");
+        // still in search mode
+        assert!(list.search_active);
+        assert_eq!(list.list.items().len(), 3);
+    }
+
+    #[test]
+    fn test_search_backspace_on_empty_exits() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        list.handle_key(key(KeyCode::Backspace));
+        assert!(!list.search_active);
+        assert_eq!(list.list.items().len(), 3);
+    }
+
+    #[test]
+    fn test_search_enter_attaches_and_exits() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        list.handle_key(key(KeyCode::Char('b')));
+        // filtered to gamma (in /proj/b)
+        let action = list.handle_key(key(KeyCode::Enter));
+        assert!(!list.search_active);
+        assert_eq!(
+            action,
+            SessionListAction::Attach {
+                session_name: "gamma".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_search_arrows_navigate() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        // no filter — all visible
+        let first = list.list.selected_item().map(|s| s.tmux_session_name.clone());
+        list.handle_key(key(KeyCode::Down));
+        let second = list.list.selected_item().map(|s| s.tmux_session_name.clone());
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn test_search_jk_do_not_navigate() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('/')));
+        let before = list.list.selected_item().map(|s| s.tmux_session_name.clone());
+        list.handle_key(key(KeyCode::Char('j')));
+        // 'j' appended to query, not navigation
+        assert_eq!(list.search_query, "j");
+        let after = list.list.selected_item().map(|s| s.tmux_session_name.clone());
+        // selection unchanged (j filtered out /proj/b but alpha/beta still in /proj/a... wait, no)
+        // /proj/a contains 'j'? No. /proj/b contains 'j'? No. "proj" contains 'j' — yes! "/proj/a" and "/proj/b" both contain 'j'
+        // so all 3 sessions remain; selection stays same
+        assert_eq!(before, after);
     }
 }
