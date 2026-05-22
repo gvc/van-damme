@@ -10,7 +10,10 @@ use std::path::Path;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::{autocomplete::{BranchCompleter, DirCompleter}, recent_dirs, theme};
+use crate::{
+    autocomplete::{BranchCompleter, DirCompleter},
+    recent_dirs, theme,
+};
 
 fn char_wrap_lines(text: &str, width: usize) -> Vec<String> {
     if width == 0 || text.is_empty() {
@@ -485,15 +488,20 @@ impl App {
                 Action::None
             }
             KeyCode::Up | KeyCode::BackTab => {
-                self.recent_dirs_dropdown.select_prev(Self::DROPDOWN_VISIBLE);
+                self.recent_dirs_dropdown
+                    .select_prev(Self::DROPDOWN_VISIBLE);
                 Action::None
             }
             KeyCode::Down | KeyCode::Tab => {
-                self.recent_dirs_dropdown.select_next(Self::DROPDOWN_VISIBLE);
+                self.recent_dirs_dropdown
+                    .select_next(Self::DROPDOWN_VISIBLE);
                 Action::None
             }
             KeyCode::Enter => {
-                let selected = self.recent_dirs_dropdown.selected_value().map(|s| s.to_string());
+                let selected = self
+                    .recent_dirs_dropdown
+                    .selected_value()
+                    .map(|s| s.to_string());
                 if let Some(dir) = selected {
                     self.dir_input = Input::new(dir.clone());
                     for _ in 0..dir.len() {
@@ -513,7 +521,9 @@ impl App {
                 Action::None
             }
             KeyCode::Char(c)
-                if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
                 self.recent_dirs_dropdown.push_query_char(c);
                 Action::None
@@ -557,7 +567,9 @@ impl App {
                 Action::None
             }
             KeyCode::Char(c)
-                if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
                 self.branch_dropdown.push_query_char(c);
                 Action::None
@@ -1064,7 +1076,9 @@ impl App {
             } else {
                 "Tab/→: complete  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
             }
-        } else if self.focused_field == InputField::Directory && !self.recent_dirs_dropdown.items.is_empty() {
+        } else if self.focused_field == InputField::Directory
+            && !self.recent_dirs_dropdown.items.is_empty()
+        {
             "Ctrl+D: recent dirs  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         } else if self.focused_field == InputField::BranchName && self.branch_suggestion.is_some() {
             "Tab/→: complete  |  Ctrl+D: branches  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
@@ -1332,7 +1346,9 @@ impl App {
             } else {
                 "Tab/→: complete  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
             }
-        } else if self.focused_field == InputField::Directory && !self.recent_dirs_dropdown.items.is_empty() {
+        } else if self.focused_field == InputField::Directory
+            && !self.recent_dirs_dropdown.items.is_empty()
+        {
             "Ctrl+D: recent dirs  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
         } else {
             "Tab: next  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: back"
@@ -1685,7 +1701,11 @@ mod tests {
 
     #[test]
     fn test_complete_path_nonexistent_returns_none() {
-        assert!(DirCompleter.complete("/nonexistent_path_xyz_12345/abc").is_none());
+        assert!(
+            DirCompleter
+                .complete("/nonexistent_path_xyz_12345/abc")
+                .is_none()
+        );
     }
 
     #[test]
@@ -2001,7 +2021,10 @@ mod tests {
             app.handle_key(key(KeyCode::Char(c)));
         }
         assert_eq!(app.recent_dirs_dropdown.query, "proj");
-        assert_eq!(app.recent_dirs_dropdown.filtered(), vec!["/home/user/projects"]);
+        assert_eq!(
+            app.recent_dirs_dropdown.filtered(),
+            vec!["/home/user/projects"]
+        );
         assert_eq!(app.recent_dirs_dropdown.selected, Some(0));
     }
 
@@ -2014,7 +2037,10 @@ mod tests {
         for c in "PROJ".chars() {
             app.handle_key(key(KeyCode::Char(c)));
         }
-        assert_eq!(app.recent_dirs_dropdown.filtered(), vec!["/home/user/Projects"]);
+        assert_eq!(
+            app.recent_dirs_dropdown.filtered(),
+            vec!["/home/user/Projects"]
+        );
     }
 
     #[test]

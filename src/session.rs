@@ -68,10 +68,7 @@ impl SessionDb {
         let fd = file.as_raw_fd();
         let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
         if ret != 0 {
-            return Err(eyre!(
-                "flock failed: {}",
-                std::io::Error::last_os_error()
-            ));
+            return Err(eyre!("flock failed: {}", std::io::Error::last_os_error()));
         }
 
         let contents = fs::read_to_string(path)?;

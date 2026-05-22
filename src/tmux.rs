@@ -183,7 +183,11 @@ pub fn create_plain_session(name: &str, dir: &str) -> Result<TmuxSession> {
     create_plain_session_with(&ProcessRunner, name, dir)
 }
 
-fn create_plain_session_with(runner: &dyn CommandRunner, name: &str, dir: &str) -> Result<TmuxSession> {
+fn create_plain_session_with(
+    runner: &dyn CommandRunner,
+    name: &str,
+    dir: &str,
+) -> Result<TmuxSession> {
     let abs_dir = std::path::Path::new(dir)
         .canonicalize()
         .map_err(|e| eyre!("Cannot resolve directory '{dir}': {e}"))?
@@ -358,9 +362,7 @@ mod tests {
         }
 
         fn run_capturing(&self, _args: &[&str]) -> Result<String> {
-            self.capturing_responses
-                .borrow_mut()
-                .remove(0)
+            self.capturing_responses.borrow_mut().remove(0)
         }
     }
 

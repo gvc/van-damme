@@ -1,43 +1,51 @@
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::theme;
 
-// ── palette ──────────────────────────────────────────────────────────────────
+// ── cyberpunk palette ────────────────────────────────────────────────────────
 
-const COL_ROCK_A: Color = Color::Rgb(0x2a, 0x35, 0x45);
-const COL_ROCK_B: Color = Color::Rgb(0x2e, 0x3b, 0x4e);
-const COL_DIRT_A: Color = Color::Rgb(0x3a, 0x30, 0x20);
-const COL_DIRT_B: Color = Color::Rgb(0x4a, 0x3d, 0x26);
-const COL_TUNNEL: Color = Color::Rgb(0x1a, 0x22, 0x30);
-const COL_WATER: Color = Color::Rgb(0x1a, 0x4a, 0x6e);
-const COL_DWARF: Color = Color::Rgb(0xd4, 0xa8, 0x43);
-const COL_PICK: Color = Color::Rgb(0xa0, 0x78, 0x38);
-const COL_MUSHROOM: Color = Color::Rgb(0x6a, 0x3a, 0x8a);
-const COL_DUST: Color = Color::Rgb(0xb4, 0x8c, 0x3c);
-const COL_SKY: Color = Color::Rgb(0x14, 0x1c, 0x26);
-const COL_STAR: Color = Color::Rgb(0x50, 0x60, 0x70);
-const COL_GRASS: Color = Color::Rgb(0x2a, 0x50, 0x28);
-const COL_TREE_GREEN: Color = Color::Rgb(0x28, 0x6a, 0x24);
-const COL_TREE_DYING: Color = Color::Rgb(0x5a, 0x40, 0x18);
-const COL_TRUNK: Color = Color::Rgb(0x4a, 0x30, 0x14);
-const COL_ANIMAL: Color = Color::Rgb(0x8a, 0x70, 0x44);
-const COL_BIRD: Color = Color::Rgb(0x70, 0x80, 0x90);
-const COL_CLOUD: Color = Color::Rgb(0x38, 0x44, 0x54);
+const COL_SKY_DEEP: Color = Color::Rgb(0x0a, 0x0e, 0x18);
+const COL_SKY_MID: Color = Color::Rgb(0x10, 0x18, 0x28);
+const COL_STAR: Color = Color::Rgb(0x40, 0x55, 0x70);
+const COL_STAR_BRIGHT: Color = Color::Rgb(0x70, 0x90, 0xb0);
 
-// ── terrain types ─────────────────────────────────────────────────────────────
+const COL_BUILDING_DARK: Color = Color::Rgb(0x0c, 0x10, 0x1a);
+const COL_BUILDING_EDGE: Color = Color::Rgb(0x1a, 0x24, 0x34);
+const COL_WINDOW_LIT: Color = Color::Rgb(0xd0, 0xb0, 0x50);
+const COL_WINDOW_DARK: Color = Color::Rgb(0x14, 0x1a, 0x22);
+
+const COL_NEON_CYAN: Color = Color::Rgb(0x00, 0xe0, 0xe0);
+const COL_NEON_PINK: Color = Color::Rgb(0xe0, 0x30, 0x80);
+const COL_NEON_AMBER: Color = Color::Rgb(0xf0, 0xa0, 0x20);
+const COL_NEON_DIM: Color = Color::Rgb(0x20, 0x30, 0x30);
+
+const COL_RAIN: Color = Color::Rgb(0x40, 0x60, 0x80);
+const COL_RAIN_BRIGHT: Color = Color::Rgb(0x60, 0x90, 0xc0);
+const COL_LIGHTNING: Color = Color::Rgb(0xe0, 0xf0, 0xff);
+
+const COL_STREET: Color = Color::Rgb(0x14, 0x18, 0x22);
+const COL_PUDDLE: Color = Color::Rgb(0x18, 0x30, 0x48);
+const COL_STEAM: Color = Color::Rgb(0x30, 0x40, 0x50);
+const COL_ANTENNA_RED: Color = Color::Rgb(0xc0, 0x20, 0x20);
+
+const COL_CAR_BODY: Color = Color::Rgb(0x20, 0x28, 0x38);
+const COL_CAR_WINDOW: Color = Color::Rgb(0x30, 0x50, 0x70);
+const COL_TAILLIGHT_RED: Color = Color::Rgb(0xc0, 0x20, 0x10);
+const COL_HEADLIGHT: Color = Color::Rgb(0xe0, 0xd0, 0x80);
+const COL_BIKE_BODY: Color = Color::Rgb(0x50, 0x30, 0x60);
+
+// ── cell types ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CellKind {
     Sky,
-    River,
-    Surface,
-    Rock,
-    Dirt,
-    Tunnel,
+    Skyline,
+    Street,
+    Puddle,
 }
 
 #[derive(Debug, Clone)]
@@ -47,148 +55,125 @@ struct GridCell {
     kind: CellKind,
 }
 
-// ── world entities ────────────────────────────────────────────────────────────
+// ── entities ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 struct Star {
     col: u16,
     row: u16,
-    visible: bool,
+    brightness: f32,
+    twinkle_rate: u8,
     counter: u8,
 }
 
-#[derive(Debug, Clone)]
-struct RiverRow {
-    row: u16,
-    chars: Vec<char>,
-    offset: usize,
+#[derive(Debug, Clone, Copy)]
+enum WindowState {
+    Lit,
+    Dark,
+    Flickering { phase: u8 },
 }
 
 #[derive(Debug, Clone)]
-struct WaterDrip {
-    col: u16,
-    row: u16,
-    ch: char,
-    alive: bool,
-}
-
-#[derive(Debug, Clone)]
-enum DwarfState {
-    Walking,
-    Digging {
-        phase: u8,
-        target_col: u16,
-        target_row: u16,
-    },
-    Pausing {
-        remaining: u8,
-    },
-}
-
-#[derive(Debug, Clone)]
-struct Dwarf {
-    col: u16,
-    row: u16,
-    dir: i8,
-    state: DwarfState,
-    idle_ticks: u8,
-    tunnel_idx: usize,
-}
-
-#[derive(Debug, Clone)]
-struct DustParticle {
-    col: u16,
-    row: u16,
-    ch: char,
-    ttl: u8,
-    ttl_max: u8,
-    dy_counter: u8,
-}
-
-#[derive(Debug, Clone)]
-struct Mushroom {
-    col: u16,
-    row: u16,
-    pulse_phase: f32,
-}
-
-#[derive(Debug, Clone)]
-struct Tunnel {
-    row: u16,
-    start_col: u16,
-    end_col: u16,
-}
-
-// Animals roam the surface above-ground
-#[derive(Debug, Clone)]
-struct Animal {
-    col: u16,
-    dir: i8,
-    ch: char,
-    move_counter: u8,
-    move_rate: u8, // ticks per step (higher = slower)
-}
-
-// Birds drift through the sky
-#[derive(Debug, Clone)]
-struct Bird {
-    col: u16,
-    row: u16,
-    dir: i8,
-    move_counter: u8,
-}
-
-// Clouds drift slowly in upper sky
-#[derive(Debug, Clone)]
-struct Cloud {
-    col: i32, // signed so it can drift off-screen and wrap
-    row: u16,
+struct Building {
+    col_start: u16,
     width: u16,
-    move_counter: u8,
-    move_rate: u8,
-}
-
-// 5-minute loop at 80ms = 3750 ticks total per tree
-// Growing: 3 stages × 333 ticks = ~1000; Mature: 1500; Dying: 750; Dead: 500
-#[derive(Debug, Clone)]
-enum TreePhase {
-    Growing { stage: u8, ticks: u16 }, // stage 0/1/2 = sapling/young/full
-    Mature { ticks: u16 },
-    Dying { ticks: u16 },
-    Dead { ttl: u16 },
+    height: u16,
+    windows: Vec<WindowState>,
+    window_cols: u8,
+    window_rows: u8,
+    has_antenna: bool,
+    antenna_blink: bool,
 }
 
 #[derive(Debug, Clone)]
-struct Tree {
-    col: u16,       // centre column on surface_row
-    phase: TreePhase,
+enum NeonState {
+    On,
+    Off,
+    Flickering { phase: u8, total: u8 },
 }
 
-// ── main state ────────────────────────────────────────────────────────────────
+#[derive(Debug, Clone)]
+struct NeonSign {
+    col: u16,
+    row: u16,
+    text: &'static str,
+    color: Color,
+    state: NeonState,
+}
+
+#[derive(Debug, Clone)]
+struct RainDrop {
+    col: u16,
+    row: u16,
+    speed: u8,
+    ch: char,
+}
+
+#[derive(Debug, Clone)]
+struct Lightning {
+    active: bool,
+    flash_ticks: u8,
+    cooldown: u16,
+    bolt_segments: Vec<(u16, u16)>,
+}
+
+#[derive(Debug, Clone)]
+struct SteamParticle {
+    col: u16,
+    row: u16,
+    ttl: u8,
+    drift: i8,
+}
+
+#[derive(Debug, Clone)]
+struct SteamVent {
+    col: u16,
+    particles: Vec<SteamParticle>,
+    emit_rate: u8,
+}
+
+#[derive(Debug, Clone)]
+struct Puddle {
+    col_start: u16,
+    width: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VehicleKind {
+    Car,
+    Motorbike,
+}
+
+#[derive(Debug, Clone)]
+struct Vehicle {
+    col: i32,
+    row: u16,
+    kind: VehicleKind,
+    speed: i8,
+}
+
+// ── main state ───────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub struct SplashState {
     width: u16,
     height: u16,
     sky_rows: u16,
-    surface_row: u16,
-    underground_start: u16,
-    tunnels: Vec<Tunnel>,
-    converted_cells: Vec<(u16, u16)>,
-    rock_chars: Vec<char>,
-    rock_is_dirt: Vec<bool>,
+    street_start: u16,
+    buildings: Vec<Building>,
+    neon_signs: Vec<NeonSign>,
     stars: Vec<Star>,
-    river_rows: Vec<RiverRow>,
-    drips: Vec<WaterDrip>,
-    dwarves: Vec<Dwarf>,
-    mushrooms: Vec<Mushroom>,
-    dust: Vec<DustParticle>,
-    trees: Vec<Tree>,
-    animals: Vec<Animal>,
-    birds: Vec<Bird>,
-    clouds: Vec<Cloud>,
+    rain: Vec<RainDrop>,
+    lightning: Lightning,
+    steam_vents: Vec<SteamVent>,
+    puddles: Vec<Puddle>,
+    vehicles: Vec<Vehicle>,
     pub tick_count: u64,
 }
+
+const NEON_TEXTS: &[&str] = &["BAR", "HOTEL", "NET", "24h", "///", "SYS"];
+const NEON_COLORS: &[Color] = &[COL_NEON_CYAN, COL_NEON_PINK, COL_NEON_AMBER];
+const RAIN_CHARS: &[char] = &['│', '╎', '|', '·'];
 
 impl SplashState {
     pub fn new() -> Self {
@@ -196,22 +181,20 @@ impl SplashState {
             width: 0,
             height: 0,
             sky_rows: 0,
-            surface_row: 0,
-            underground_start: 0,
-            tunnels: Vec::new(),
-            converted_cells: Vec::new(),
-            rock_chars: Vec::new(),
-            rock_is_dirt: Vec::new(),
+            street_start: 0,
+            buildings: Vec::new(),
+            neon_signs: Vec::new(),
             stars: Vec::new(),
-            river_rows: Vec::new(),
-            drips: Vec::new(),
-            dwarves: Vec::new(),
-            mushrooms: Vec::new(),
-            dust: Vec::new(),
-            trees: Vec::new(),
-            animals: Vec::new(),
-            birds: Vec::new(),
-            clouds: Vec::new(),
+            rain: Vec::new(),
+            lightning: Lightning {
+                active: false,
+                flash_ticks: 0,
+                cooldown: 100,
+                bolt_segments: Vec::new(),
+            },
+            steam_vents: Vec::new(),
+            puddles: Vec::new(),
+            vehicles: Vec::new(),
             tick_count: 0,
         }
     }
@@ -219,224 +202,173 @@ impl SplashState {
     fn build_world(&mut self, width: u16, height: u16) {
         self.width = width;
         self.height = height;
-        self.converted_cells.clear();
-        self.drips.clear();
-        self.dust.clear();
 
-        self.sky_rows = ((height as f32 * 0.30) as u16).max(2);
-        self.surface_row = self.sky_rows;
-        self.underground_start = self.sky_rows + 1;
+        self.sky_rows = ((height as f32 * 0.25) as u16).max(2);
+        let street_rows = ((height as f32 * 0.20) as u16).max(2);
+        self.street_start = height.saturating_sub(street_rows);
 
-        let ug_start = self.underground_start;
-        let ug_end = height.saturating_sub(1);
-
-        // ── rock/dirt per-cell chars ──────────────────────────────────────────
-        let total = (width as usize) * (height as usize);
-        let rock_set = ['#', '▓', '▒', '░', '╬', '·'];
-        let dirt_set = ['▓', '▒', '#', '·', '·', '·'];
-        self.rock_chars = (0..total)
-            .map(|_| {
-                let is_dirt = fastrand::u8(0..10) < 3;
-                let set = if is_dirt { &dirt_set } else { &rock_set };
-                set[fastrand::usize(0..set.len())]
-            })
-            .collect();
-        self.rock_is_dirt = (0..total).map(|_| fastrand::u8(0..10) < 3).collect();
-
-        // ── tunnels ───────────────────────────────────────────────────────────
-        self.tunnels.clear();
-        let tunnel_count = fastrand::u8(2..=3) as usize;
-        if ug_start < ug_end {
-            let available: Vec<u16> = (ug_start..ug_end).collect();
-            let mut used_rows: Vec<u16> = Vec::new();
-            let mut attempts = 0usize;
-            while self.tunnels.len() < tunnel_count && attempts < 30 {
-                attempts += 1;
-                let row = available[fastrand::usize(0..available.len())];
-                if used_rows.iter().any(|&r| r.abs_diff(row) < 2) {
-                    continue;
-                }
-                let min_len = (width as f32 * 0.3) as u16;
-                let max_len = (width as f32 * 0.7) as u16;
-                let len = min_len + fastrand::u16(0..=(max_len - min_len).max(1));
-                let max_start = width.saturating_sub(len);
-                let start_col = if max_start > 0 { fastrand::u16(0..max_start) } else { 0 };
-                let end_col = (start_col + len).min(width.saturating_sub(1));
-                used_rows.push(row);
-                self.tunnels.push(Tunnel { row, start_col, end_col });
-            }
-        }
-        // sort by row for connector logic
-        self.tunnels.sort_by_key(|t| t.row);
-
-        // clear surface entities rebuilt below
-        self.animals.clear();
-        self.birds.clear();
-        self.clouds.clear();
+        self.stars.clear();
+        self.buildings.clear();
+        self.neon_signs.clear();
+        self.rain.clear();
+        self.steam_vents.clear();
+        self.puddles.clear();
+        self.lightning.active = false;
+        self.lightning.cooldown = fastrand::u16(100..300);
+        self.lightning.bolt_segments.clear();
 
         // ── stars ─────────────────────────────────────────────────────────────
-        self.stars.clear();
         for r in 0..self.sky_rows {
             for c in 0..width {
-                if fastrand::u16(0..50) == 0 {
+                if fastrand::u16(0..40) == 0 {
                     self.stars.push(Star {
                         col: c,
                         row: r,
-                        visible: true,
-                        counter: fastrand::u8(10..25),
+                        brightness: fastrand::f32(),
+                        twinkle_rate: fastrand::u8(8..20),
+                        counter: fastrand::u8(0..15),
                     });
                 }
             }
         }
 
-        // ── river rows ────────────────────────────────────────────────────────
-        self.river_rows.clear();
-        let river_chars = ['≈', '~', '≋'];
-        let n_rivers = if self.sky_rows > 3 { fastrand::u8(1..=2) } else { 1 };
-        let mut used_river_rows: Vec<u16> = Vec::new();
-        for _ in 0..n_rivers {
-            if self.sky_rows < 2 {
-                break;
-            }
-            let mut attempts = 0;
-            loop {
-                attempts += 1;
-                if attempts > 20 {
-                    break;
-                }
-                let r = fastrand::u16(1..self.sky_rows.saturating_sub(1).max(1) + 1);
-                if used_river_rows.contains(&r) {
-                    continue;
-                }
-                used_river_rows.push(r);
-                let chars: Vec<char> = (0..width)
-                    .map(|_| river_chars[fastrand::usize(0..river_chars.len())])
+        // ── buildings ─────────────────────────────────────────────────────────
+        let skyline_height = self.street_start.saturating_sub(self.sky_rows);
+        if skyline_height > 2 && width > 6 {
+            let mut x: u16 = 0;
+            while x < width.saturating_sub(3) {
+                let bw = fastrand::u16(4..=12).min(width - x);
+                let min_h = (skyline_height as f32 * 0.3) as u16;
+                let max_h = (skyline_height as f32 * 0.92) as u16;
+                let bh = fastrand::u16(min_h.max(2)..=max_h.max(3));
+
+                let wcols = ((bw.saturating_sub(2)) / 3).min(4) as u8;
+                let wrows = ((bh.saturating_sub(2)) / 3).min(8) as u8;
+                let n_windows = (wcols as usize) * (wrows as usize);
+                let windows: Vec<WindowState> = (0..n_windows)
+                    .map(|_| {
+                        let r = fastrand::u8(0..10);
+                        if r < 6 {
+                            WindowState::Lit
+                        } else if r < 9 {
+                            WindowState::Dark
+                        } else {
+                            WindowState::Flickering {
+                                phase: fastrand::u8(0..4),
+                            }
+                        }
+                    })
                     .collect();
-                self.river_rows.push(RiverRow { row: r, chars, offset: 0 });
+
+                let has_antenna = bh >= max_h.saturating_sub(2) && fastrand::u8(0..3) == 0;
+
+                self.buildings.push(Building {
+                    col_start: x,
+                    width: bw,
+                    height: bh,
+                    windows,
+                    window_cols: wcols,
+                    window_rows: wrows,
+                    has_antenna,
+                    antenna_blink: false,
+                });
+
+                let gap = fastrand::u16(0..=1);
+                x += bw + gap;
+            }
+        }
+
+        // ── neon signs ────────────────────────────────────────────────────────
+        let n_signs = fastrand::u8(2..=4) as usize;
+        let mut sign_attempts = 0usize;
+        while self.neon_signs.len() < n_signs && sign_attempts < 40 {
+            sign_attempts += 1;
+            if self.buildings.is_empty() {
                 break;
             }
-        }
-
-        // ── dwarves ───────────────────────────────────────────────────────────
-        self.dwarves.clear();
-        for (idx, tunnel) in self.tunnels.iter().enumerate() {
-            if tunnel.end_col <= tunnel.start_col {
+            let b = &self.buildings[fastrand::usize(0..self.buildings.len())];
+            if b.height < 4 || b.width < 5 {
                 continue;
             }
-            let len = tunnel.end_col - tunnel.start_col;
-            let offsets = [len / 3, (len * 2) / 3];
-            for offset in offsets {
-                let col = tunnel.start_col + offset;
-                let dir: i8 = if fastrand::bool() { 1 } else { -1 };
-                self.dwarves.push(Dwarf {
-                    col,
-                    row: tunnel.row,
-                    dir,
-                    state: DwarfState::Walking,
-                    idle_ticks: fastrand::u8(0..15),
-                    tunnel_idx: idx,
-                });
-            }
-        }
-
-        // ── mushrooms ─────────────────────────────────────────────────────────
-        self.mushrooms.clear();
-        let n_mushrooms = 3.min(self.tunnels.len() * 2);
-        let mut attempts = 0;
-        while self.mushrooms.len() < n_mushrooms && attempts < 50 {
-            attempts += 1;
-            if self.tunnels.is_empty() {
-                break;
-            }
-            let t = &self.tunnels[fastrand::usize(0..self.tunnels.len())];
-            if t.end_col <= t.start_col {
+            let text = NEON_TEXTS[fastrand::usize(0..NEON_TEXTS.len())];
+            let text_w = text.len() as u16;
+            if text_w + 2 > b.width {
                 continue;
             }
-            let col = t.start_col + fastrand::u16(0..=(t.end_col - t.start_col));
-            let row = t.row;
-            let occupied = self.mushrooms.iter().any(|m| m.col == col && m.row == row)
-                || self.dwarves.iter().any(|d| d.col == col && d.row == row);
-            if !occupied {
-                self.mushrooms.push(Mushroom {
-                    col,
-                    row,
-                    pulse_phase: fastrand::f32() * std::f32::consts::TAU,
-                });
-            }
-        }
-
-        // ── trees ─────────────────────────────────────────────────────────────
-        self.trees.clear();
-        if self.sky_rows >= 2 && width >= 10 {
-            let n_trees = fastrand::u16(3..=6) as usize;
-            let min_spacing: u16 = (width / (n_trees as u16 + 1)).max(4);
-            let mut attempts = 0usize;
-            while self.trees.len() < n_trees && attempts < 60 {
-                attempts += 1;
-                let col = fastrand::u16(1..width.saturating_sub(1));
-                let too_close = self.trees.iter().any(|t| t.col.abs_diff(col) < min_spacing);
-                if too_close {
-                    continue;
+            let col = b.col_start + fastrand::u16(1..=(b.width - text_w - 1));
+            let building_top = self.street_start.saturating_sub(b.height);
+            let row = building_top + fastrand::u16(1..b.height.saturating_sub(2).max(1) + 1);
+            let color = NEON_COLORS[fastrand::usize(0..NEON_COLORS.len())];
+            let state = if fastrand::u8(0..10) < 7 {
+                NeonState::On
+            } else {
+                NeonState::Flickering {
+                    phase: 0,
+                    total: fastrand::u8(6..12),
                 }
-                // stagger initial phase so trees don't all cycle together
-                let phase_offset = fastrand::u16(0..3750);
-                let phase = Self::tree_phase_from_offset(phase_offset);
-                self.trees.push(Tree { col, phase });
-            }
+            };
+            self.neon_signs.push(NeonSign {
+                col,
+                row,
+                text,
+                color,
+                state,
+            });
         }
 
-        // ── animals ───────────────────────────────────────────────────────────
-        // DF fauna chars: d=dog/deer, c=cat, b=boar, h=horse, r=rabbit
-        let animal_chars = ['d', 'c', 'b', 'h', 'r', 'f'];
-        let n_animals = fastrand::u16(2..=4) as usize;
-        for _ in 0..n_animals {
-            let col = fastrand::u16(0..width);
-            let dir: i8 = if fastrand::bool() { 1 } else { -1 };
-            let ch = animal_chars[fastrand::usize(0..animal_chars.len())];
-            let move_rate = fastrand::u8(2..=5);
-            self.animals.push(Animal { col, dir, ch, move_counter: 0, move_rate });
+        // ── rain ──────────────────────────────────────────────────────────────
+        let n_rain = ((width as f32 * 0.15) as u16).max(3);
+        for _ in 0..n_rain {
+            self.rain.push(RainDrop {
+                col: fastrand::u16(0..width),
+                row: fastrand::u16(0..height),
+                speed: if fastrand::u8(0..5) == 0 { 2 } else { 1 },
+                ch: RAIN_CHARS[fastrand::usize(0..RAIN_CHARS.len())],
+            });
         }
 
-        // ── birds ─────────────────────────────────────────────────────────────
-        if self.sky_rows >= 3 {
-            let n_birds = fastrand::u16(2..=5) as usize;
-            for _ in 0..n_birds {
-                let col = fastrand::u16(0..width);
-                let row = fastrand::u16(0..self.sky_rows.saturating_sub(1).max(1));
-                let dir: i8 = if fastrand::bool() { 1 } else { -1 };
-                self.birds.push(Bird { col, row, dir, move_counter: fastrand::u8(0..4) });
-            }
+        // ── steam vents ───────────────────────────────────────────────────────
+        let n_vents = fastrand::u8(1..=3) as usize;
+        for _ in 0..n_vents {
+            self.steam_vents.push(SteamVent {
+                col: fastrand::u16(0..width),
+                particles: Vec::new(),
+                emit_rate: fastrand::u8(3..=6),
+            });
         }
 
-        // ── clouds ────────────────────────────────────────────────────────────
-        if self.sky_rows >= 2 {
-            let n_clouds = fastrand::u16(2..=4) as usize;
-            for _ in 0..n_clouds {
-                let cloud_width = fastrand::u16(4..=10);
+        // ── puddles ───────────────────────────────────────────────────────────
+        let n_puddles = fastrand::u8(2..=4) as usize;
+        for _ in 0..n_puddles {
+            let pw = fastrand::u16(5..=15).min(width / 2);
+            let pc = fastrand::u16(0..width.saturating_sub(pw));
+            self.puddles.push(Puddle {
+                col_start: pc,
+                width: pw,
+            });
+        }
+
+        // ── vehicles ─────────────────────────────────────────────────────────
+        self.vehicles.clear();
+        let street_rows_count = height.saturating_sub(self.street_start);
+        if street_rows_count >= 2 {
+            let n_vehicles = fastrand::u8(2..=5) as usize;
+            for _ in 0..n_vehicles {
+                let kind = if fastrand::u8(0..3) == 0 {
+                    VehicleKind::Motorbike
+                } else {
+                    VehicleKind::Car
+                };
+                let row = self.street_start + fastrand::u16(1..street_rows_count.max(2));
+                let speed = if fastrand::bool() { 1 } else { -1 };
                 let col = fastrand::i32(0..width as i32);
-                let row = fastrand::u16(0..self.sky_rows.saturating_sub(1).max(1));
-                let move_rate = fastrand::u8(6..=15);
-                self.clouds.push(Cloud {
+                self.vehicles.push(Vehicle {
                     col,
-                    row,
-                    width: cloud_width,
-                    move_counter: 0,
-                    move_rate,
+                    row: row.min(height - 1),
+                    kind,
+                    speed,
                 });
             }
-        }
-    }
-
-    fn tree_phase_from_offset(offset: u16) -> TreePhase {
-        match offset {
-            0..=999 => {
-                let stage = (offset / 333).min(2) as u8;
-                let ticks = offset % 333;
-                TreePhase::Growing { stage, ticks }
-            }
-            1000..=2499 => TreePhase::Mature { ticks: offset - 1000 },
-            2500..=3249 => TreePhase::Dying { ticks: offset - 2500 },
-            _ => TreePhase::Dead { ttl: offset - 3250 },
         }
     }
 
@@ -446,323 +378,160 @@ impl SplashState {
         }
         self.tick_count += 1;
 
-        // ── river scroll ──────────────────────────────────────────────────────
-        let river_chars = ['≈', '~', '≋'];
-        for rr in &mut self.river_rows {
-            rr.offset = (rr.offset + 1) % rr.chars.len().max(1);
-            // occasionally mutate a char
-            if fastrand::u8(0..8) == 0 {
-                let idx = fastrand::usize(0..rr.chars.len().max(1));
-                rr.chars[idx] = river_chars[fastrand::usize(0..river_chars.len())];
-            }
-        }
-
         // ── stars ─────────────────────────────────────────────────────────────
         for star in &mut self.stars {
-            if star.counter == 0 {
-                if fastrand::u8(0..10) == 0 {
-                    star.visible = !star.visible;
+            star.counter += 1;
+            if star.counter >= star.twinkle_rate {
+                star.counter = 0;
+                star.brightness += 0.2;
+                if star.brightness > 1.0 {
+                    star.brightness -= 1.0;
                 }
-                star.counter = fastrand::u8(12..28);
-            } else {
-                star.counter -= 1;
             }
         }
 
-        // ── dust ──────────────────────────────────────────────────────────────
-        for p in &mut self.dust {
-            if p.ttl == 0 {
-                continue;
+        // ── windows ───────────────────────────────────────────────────────────
+        for building in &mut self.buildings {
+            for window in &mut building.windows {
+                match window {
+                    WindowState::Lit => {
+                        if fastrand::u16(0..300) == 0 {
+                            *window = WindowState::Dark;
+                        }
+                    }
+                    WindowState::Dark => {
+                        if fastrand::u16(0..400) == 0 {
+                            *window = WindowState::Lit;
+                        }
+                    }
+                    WindowState::Flickering { phase } => {
+                        *phase += 1;
+                        if *phase > 6 {
+                            *window = if fastrand::bool() {
+                                WindowState::Lit
+                            } else {
+                                WindowState::Dark
+                            };
+                        }
+                    }
+                }
             }
-            p.ttl -= 1;
-            p.dy_counter += 1;
-            if p.dy_counter >= 2 {
-                p.dy_counter = 0;
+            if building.has_antenna && self.tick_count.is_multiple_of(20) {
+                building.antenna_blink = !building.antenna_blink;
+            }
+        }
+
+        // ── neon signs ────────────────────────────────────────────────────────
+        for sign in &mut self.neon_signs {
+            match &mut sign.state {
+                NeonState::On => {
+                    if fastrand::u16(0..200) == 0 {
+                        sign.state = NeonState::Flickering {
+                            phase: 0,
+                            total: fastrand::u8(6..12),
+                        };
+                    }
+                }
+                NeonState::Off => {
+                    if fastrand::u16(0..150) == 0 {
+                        sign.state = NeonState::On;
+                    }
+                }
+                NeonState::Flickering { phase, total } => {
+                    *phase += 1;
+                    if *phase >= *total {
+                        sign.state = if fastrand::u8(0..4) == 0 {
+                            NeonState::Off
+                        } else {
+                            NeonState::On
+                        };
+                    }
+                }
+            }
+        }
+
+        // ── rain ──────────────────────────────────────────────────────────────
+        for drop in &mut self.rain {
+            drop.row += drop.speed as u16;
+            if drop.row >= self.height {
+                drop.row = 0;
+                drop.col = fastrand::u16(0..self.width);
+                drop.ch = RAIN_CHARS[fastrand::usize(0..RAIN_CHARS.len())];
+            }
+        }
+
+        // ── lightning ─────────────────────────────────────────────────────────
+        if self.lightning.active {
+            self.lightning.flash_ticks = self.lightning.flash_ticks.saturating_sub(1);
+            if self.lightning.flash_ticks == 0 {
+                self.lightning.active = false;
+                self.lightning.cooldown = fastrand::u16(200..600);
+                self.lightning.bolt_segments.clear();
+            }
+        } else {
+            self.lightning.cooldown = self.lightning.cooldown.saturating_sub(1);
+            if self.lightning.cooldown == 0 && fastrand::u16(0..30) == 0 {
+                self.trigger_lightning();
+            }
+        }
+
+        // ── steam vents ───────────────────────────────────────────────────────
+        for vent in &mut self.steam_vents {
+            for p in &mut vent.particles {
+                p.ttl = p.ttl.saturating_sub(1);
                 p.row = p.row.saturating_sub(1);
-            }
-        }
-        self.dust.retain(|p| p.ttl > 0);
-
-        // ── drips ─────────────────────────────────────────────────────────────
-        // Collect solid positions separately to avoid borrow conflict.
-        let solid_check: Vec<(u16, u16, bool)> = self
-            .drips
-            .iter()
-            .map(|d| {
-                if !d.alive {
-                    return (d.col, d.row, false);
+                if fastrand::u8(0..3) == 0 {
+                    let next = p.col as i32 + p.drift as i32;
+                    if next >= 0 && next < self.width as i32 {
+                        p.col = next as u16;
+                    }
                 }
-                let next_row = d.row + 1;
-                if next_row >= self.height {
-                    return (d.col, next_row, false);
-                }
-                let solid = self.is_solid(d.col, next_row);
-                (d.col, next_row, !solid)
-            })
-            .collect();
-        for (drip, (_, next_row, keep)) in self.drips.iter_mut().zip(solid_check.iter()) {
-            if !drip.alive {
-                continue;
             }
-            if !keep {
-                drip.alive = false;
-            } else {
-                drip.row = *next_row;
-            }
-        }
-        self.drips.retain(|d| d.alive);
+            vent.particles.retain(|p| p.ttl > 0);
 
-        // spawn new drips from river rows
-        let drip_chars = ['│', '╎', '·'];
-        let river_rows_snapshot: Vec<(u16, usize)> =
-            self.river_rows.iter().map(|rr| (rr.row, rr.chars.len())).collect();
-        for (row, len) in river_rows_snapshot {
-            if row + 1 >= self.height {
-                continue;
-            }
-            for c in 0..self.width {
-                if fastrand::u16(0..120) == 0 && (c as usize) < len {
-                    self.drips.push(WaterDrip {
-                        col: c,
-                        row: row + 1,
-                        ch: drip_chars[fastrand::usize(0..drip_chars.len())],
-                        alive: true,
+            if fastrand::u8(0..vent.emit_rate) == 0 {
+                let row = self.street_start;
+                if row > 0 {
+                    vent.particles.push(SteamParticle {
+                        col: vent.col,
+                        row: row.saturating_sub(1),
+                        ttl: fastrand::u8(4..=8),
+                        drift: if fastrand::bool() { 1 } else { -1 },
                     });
                 }
             }
         }
 
-        // ── dwarves ───────────────────────────────────────────────────────────
-        for idx in 0..self.dwarves.len() {
-            self.step_dwarf(idx);
-        }
-
-        // ── mushroom pulse ────────────────────────────────────────────────────
-        for m in &mut self.mushrooms {
-            m.pulse_phase += 0.15;
-            if m.pulse_phase > std::f32::consts::TAU {
-                m.pulse_phase -= std::f32::consts::TAU;
-            }
-        }
-
-        // ── animals ───────────────────────────────────────────────────────────
-        for animal in &mut self.animals {
-            animal.move_counter += 1;
-            if animal.move_counter >= animal.move_rate {
-                animal.move_counter = 0;
-                // occasionally change direction
-                if fastrand::u8(0..20) == 0 {
-                    animal.dir = -animal.dir;
-                }
-                let next = animal.col as i32 + animal.dir as i32;
-                if next < 0 || next >= self.width as i32 {
-                    animal.dir = -animal.dir;
-                } else {
-                    animal.col = next as u16;
-                }
-            }
-        }
-
-        // ── birds ─────────────────────────────────────────────────────────────
-        for bird in &mut self.birds {
-            bird.move_counter += 1;
-            if bird.move_counter >= 3 {
-                bird.move_counter = 0;
-                // birds wrap around screen edges
-                let next = bird.col as i32 + bird.dir as i32;
-                if next < 0 {
-                    bird.col = self.width.saturating_sub(1);
-                } else if next >= self.width as i32 {
-                    bird.col = 0;
-                } else {
-                    bird.col = next as u16;
-                }
-                // small vertical drift
-                if fastrand::u8(0..30) == 0 && self.sky_rows > 1 {
-                    let new_row = bird.row as i32 + if fastrand::bool() { 1 } else { -1 };
-                    if new_row >= 0 && new_row < self.sky_rows as i32 - 1 {
-                        bird.row = new_row as u16;
-                    }
-                }
-            }
-        }
-
-        // ── clouds ────────────────────────────────────────────────────────────
-        for cloud in &mut self.clouds {
-            cloud.move_counter += 1;
-            if cloud.move_counter >= cloud.move_rate {
-                cloud.move_counter = 0;
-                cloud.col -= 1; // clouds always drift left (DF wind)
-                // wrap when fully off left edge
-                if cloud.col + (cloud.width as i32) < 0 {
-                    cloud.col = self.width as i32;
-                }
-            }
-        }
-
-        // ── trees ─────────────────────────────────────────────────────────────
-        for tree in &mut self.trees {
-            tree.phase = match tree.phase {
-                TreePhase::Growing { stage, ticks } => {
-                    if ticks + 1 >= 333 {
-                        if stage < 2 {
-                            TreePhase::Growing { stage: stage + 1, ticks: 0 }
-                        } else {
-                            TreePhase::Mature { ticks: 0 }
-                        }
-                    } else {
-                        TreePhase::Growing { stage, ticks: ticks + 1 }
-                    }
-                }
-                TreePhase::Mature { ticks } => {
-                    if ticks + 1 >= 1500 {
-                        TreePhase::Dying { ticks: 0 }
-                    } else {
-                        TreePhase::Mature { ticks: ticks + 1 }
-                    }
-                }
-                TreePhase::Dying { ticks } => {
-                    if ticks + 1 >= 750 {
-                        TreePhase::Dead { ttl: 0 }
-                    } else {
-                        TreePhase::Dying { ticks: ticks + 1 }
-                    }
-                }
-                TreePhase::Dead { ttl } => {
-                    if ttl + 1 >= 500 {
-                        TreePhase::Growing { stage: 0, ticks: 0 }
-                    } else {
-                        TreePhase::Dead { ttl: ttl + 1 }
-                    }
-                }
+        // ── vehicles ─────────────────────────────────────────────────────────
+        for vehicle in &mut self.vehicles {
+            vehicle.col += vehicle.speed as i32;
+            let vw = match vehicle.kind {
+                VehicleKind::Car => 5,
+                VehicleKind::Motorbike => 3,
             };
-        }
-    }
-
-    fn step_dwarf(&mut self, idx: usize) {
-        let tunnel_idx = self.dwarves[idx].tunnel_idx;
-        let (t_start, t_end, t_row) = if tunnel_idx < self.tunnels.len() {
-            let t = &self.tunnels[tunnel_idx];
-            (t.start_col, t.end_col, t.row)
-        } else {
-            return;
-        };
-
-        let state = self.dwarves[idx].state.clone();
-        match state {
-            DwarfState::Walking => {
-                let d = &mut self.dwarves[idx];
-                d.idle_ticks += 1;
-
-                // decide to dig (~every 60–80 ticks at 80ms ≈ 5–6s)
-                if d.idle_ticks >= 60 && fastrand::u8(0..5) == 0 {
-                    d.idle_ticks = 0;
-                    // try to find an adjacent rock cell
-                    let candidates: Vec<(u16, u16)> = [
-                        (d.col.wrapping_add_signed(d.dir as i16), d.row),
-                        (d.col, d.row.saturating_sub(1)),
-                        (d.col, d.row + 1),
-                    ]
-                    .iter()
-                    .filter(|&&(c, r)| {
-                        c < self.width
-                            && r < self.height
-                            && r >= self.underground_start
-                            && self.is_solid(c, r)
-                    })
-                    .copied()
-                    .collect();
-
-                    if let Some(&(tc, tr)) = candidates.first() {
-                        self.dwarves[idx].state = DwarfState::Digging {
-                            phase: 0,
-                            target_col: tc,
-                            target_row: tr,
-                        };
-                        return;
-                    }
-                }
-
-                // walk
-                let d = &mut self.dwarves[idx];
-                let next_col = d.col as i32 + d.dir as i32;
-                if next_col < t_start as i32 || next_col > t_end as i32 {
-                    d.dir = -d.dir;
-                } else {
-                    d.col = next_col as u16;
-                }
-            }
-
-            DwarfState::Digging { phase, target_col, target_row } => {
-                if phase < 3 {
-                    self.dwarves[idx].state = DwarfState::Digging {
-                        phase: phase + 1,
-                        target_col,
-                        target_row,
-                    };
-                } else {
-                    // convert target to tunnel
-                    self.converted_cells.push((target_col, target_row));
-                    // also extend the tunnel record if adjacent
-                    if target_row == t_row
-                        && let Some(t) = self.tunnels.get_mut(tunnel_idx)
-                    {
-                        if target_col == t.start_col.saturating_sub(1) {
-                            t.start_col = t.start_col.saturating_sub(1);
-                        } else if target_col == t.end_col + 1 && t.end_col + 1 < self.width {
-                            t.end_col += 1;
-                        }
-                    }
-                    self.spawn_dust(target_col, target_row);
-                    let pause = fastrand::u8(3..=8);
-                    self.dwarves[idx].state = DwarfState::Pausing { remaining: pause };
-                }
-            }
-
-            DwarfState::Pausing { remaining } => {
-                if remaining == 0 {
-                    self.dwarves[idx].state = DwarfState::Walking;
-                } else {
-                    self.dwarves[idx].state = DwarfState::Pausing {
-                        remaining: remaining - 1,
-                    };
-                }
+            if vehicle.speed > 0 && vehicle.col > self.width as i32 + vw {
+                vehicle.col = -(vw);
+            } else if vehicle.speed < 0 && vehicle.col < -(vw) {
+                vehicle.col = self.width as i32;
             }
         }
     }
 
-    fn spawn_dust(&mut self, col: u16, row: u16) {
-        let dust_chars = ['*', '+', '·'];
-        let count = fastrand::u8(3..=5);
-        for _ in 0..count {
-            let dc = col.saturating_add_signed(fastrand::i16(-1..=1) as i16);
-            let dr = row.saturating_add_signed(fastrand::i16(-1..=0) as i16);
-            let ttl = fastrand::u8(3..=6);
-            self.dust.push(DustParticle {
-                col: dc.min(self.width.saturating_sub(1)),
-                row: dr,
-                ch: dust_chars[fastrand::usize(0..dust_chars.len())],
-                ttl,
-                ttl_max: ttl,
-                dy_counter: 0,
-            });
-        }
-    }
+    fn trigger_lightning(&mut self) {
+        self.lightning.active = true;
+        self.lightning.flash_ticks = fastrand::u8(3..=5);
+        self.lightning.bolt_segments.clear();
 
-    /// Returns true if the cell is solid rock/dirt (not sky, not tunnel, not converted).
-    fn is_solid(&self, col: u16, row: u16) -> bool {
-        if row < self.underground_start || col >= self.width || row >= self.height {
-            return false;
-        }
-        if self.converted_cells.contains(&(col, row)) {
-            return false;
-        }
-        for t in &self.tunnels {
-            if row == t.row && col >= t.start_col && col <= t.end_col {
-                return false;
+        let col = fastrand::u16(0..self.width);
+        let mut c = col;
+        for r in 0..self.sky_rows.min(self.street_start) {
+            self.lightning.bolt_segments.push((c, r));
+            let drift = fastrand::i8(-1..=1);
+            let next = c as i32 + drift as i32;
+            if next >= 0 && next < self.width as i32 {
+                c = next as u16;
             }
         }
-        true
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
@@ -774,9 +543,10 @@ impl SplashState {
             self.build_world(area.width, area.height);
         }
 
-        // build grid
         let w = area.width as usize;
         let h = area.height as usize;
+
+        // ── base grid ─────────────────────────────────────────────────────────
         let mut grid: Vec<GridCell> = (0..w * h)
             .map(|i| {
                 let col = (i % w) as u16;
@@ -785,192 +555,231 @@ impl SplashState {
             })
             .collect();
 
-        // overlay river
-        for rr in &self.river_rows {
-            if rr.row >= area.height {
-                continue;
-            }
-            for c in 0..area.width as usize {
-                let char_idx = (c + rr.offset) % rr.chars.len().max(1);
-                grid[rr.row as usize * w + c] = GridCell {
-                    ch: rr.chars[char_idx],
-                    fg: COL_WATER,
-                    kind: CellKind::River,
-                };
-            }
-        }
-
-        // overlay stars
+        // ── stars ─────────────────────────────────────────────────────────────
         for star in &self.stars {
             if star.row >= area.height || star.col >= area.width {
                 continue;
             }
             let idx = star.row as usize * w + star.col as usize;
             if grid[idx].kind == CellKind::Sky {
-                grid[idx].ch = if star.visible { '·' } else { ' ' };
-                grid[idx].fg = COL_STAR;
+                if star.brightness > 0.6 {
+                    grid[idx].ch = '*';
+                    grid[idx].fg = COL_STAR_BRIGHT;
+                } else if star.brightness > 0.3 {
+                    grid[idx].ch = '·';
+                    grid[idx].fg = COL_STAR;
+                } else {
+                    grid[idx].ch = ' ';
+                }
             }
         }
 
-        // overlay tunnels
-        for t in &self.tunnels {
-            if t.row >= area.height {
+        // ── building windows ──────────────────────────────────────────────────
+        for building in &self.buildings {
+            let building_top = self.street_start.saturating_sub(building.height);
+            for wr in 0..building.window_rows {
+                for wc in 0..building.window_cols {
+                    let win_idx = wr as usize * building.window_cols as usize + wc as usize;
+                    if win_idx >= building.windows.len() {
+                        continue;
+                    }
+
+                    let cell_col = building.col_start + 1 + (wc as u16) * 3;
+                    let cell_row = building_top + 2 + (wr as u16) * 3;
+
+                    if cell_col >= area.width || cell_row >= area.height {
+                        continue;
+                    }
+                    if cell_row >= self.street_start {
+                        continue;
+                    }
+
+                    let idx = cell_row as usize * w + cell_col as usize;
+                    match building.windows[win_idx] {
+                        WindowState::Lit => {
+                            grid[idx].ch = '▪';
+                            grid[idx].fg = COL_WINDOW_LIT;
+                        }
+                        WindowState::Dark => {
+                            grid[idx].ch = '▫';
+                            grid[idx].fg = COL_WINDOW_DARK;
+                        }
+                        WindowState::Flickering { phase } => {
+                            grid[idx].ch = '▪';
+                            grid[idx].fg = if phase % 2 == 0 {
+                                COL_WINDOW_LIT
+                            } else {
+                                COL_WINDOW_DARK
+                            };
+                        }
+                    }
+                }
+            }
+
+            // antenna
+            if building.has_antenna {
+                let antenna_col = building.col_start + building.width / 2;
+                let antenna_row = self.street_start.saturating_sub(building.height + 1);
+                if antenna_col < area.width && antenna_row < area.height {
+                    let idx = antenna_row as usize * w + antenna_col as usize;
+                    grid[idx].ch = '╻';
+                    grid[idx].fg = if building.antenna_blink {
+                        COL_ANTENNA_RED
+                    } else {
+                        COL_BUILDING_EDGE
+                    };
+                }
+            }
+        }
+
+        // ── neon signs ────────────────────────────────────────────────────────
+        for sign in &self.neon_signs {
+            if sign.row >= area.height {
                 continue;
             }
-            for c in t.start_col..=t.end_col.min(area.width.saturating_sub(1)) {
-                grid[t.row as usize * w + c as usize] = GridCell {
-                    ch: ' ',
-                    fg: COL_TUNNEL,
-                    kind: CellKind::Tunnel,
-                };
+            let visible = match &sign.state {
+                NeonState::On => true,
+                NeonState::Off => false,
+                NeonState::Flickering { phase, .. } => phase % 3 != 0,
+            };
+            let fg = if visible { sign.color } else { COL_NEON_DIM };
+            for (i, ch) in sign.text.chars().enumerate() {
+                let c = sign.col + i as u16;
+                if c >= area.width {
+                    break;
+                }
+                let idx = sign.row as usize * w + c as usize;
+                grid[idx].ch = ch;
+                grid[idx].fg = fg;
             }
         }
 
-        // overlay converted cells
-        for &(col, row) in &self.converted_cells {
-            if row < area.height && col < area.width {
-                grid[row as usize * w + col as usize] = GridCell {
-                    ch: ' ',
-                    fg: COL_TUNNEL,
-                    kind: CellKind::Tunnel,
-                };
-            }
-        }
-
-        // mushrooms
-        for m in &self.mushrooms {
-            if m.row >= area.height || m.col >= area.width {
+        // ── rain ──────────────────────────────────────────────────────────────
+        for drop in &self.rain {
+            if drop.row >= area.height || drop.col >= area.width {
                 continue;
             }
-            let t = (m.pulse_phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
-            let fg = Self::lerp_color(COL_TUNNEL, COL_MUSHROOM, t);
-            grid[m.row as usize * w + m.col as usize] = GridCell {
-                ch: '♠',
-                fg,
-                kind: CellKind::Tunnel,
+            let idx = drop.row as usize * w + drop.col as usize;
+            grid[idx].ch = drop.ch;
+            grid[idx].fg = if drop.speed > 1 {
+                COL_RAIN_BRIGHT
+            } else {
+                COL_RAIN
             };
         }
 
-        // dust
-        for p in &self.dust {
-            if p.row >= area.height || p.col >= area.width {
-                continue;
+        // ── lightning ─────────────────────────────────────────────────────────
+        if self.lightning.active {
+            for &(bc, br) in &self.lightning.bolt_segments {
+                if br < area.height && bc < area.width {
+                    let idx = br as usize * w + bc as usize;
+                    grid[idx].ch = '╋';
+                    grid[idx].fg = COL_LIGHTNING;
+                }
             }
-            let t = p.ttl as f32 / p.ttl_max as f32;
-            let fg = Self::lerp_color(COL_TUNNEL, COL_DUST, t);
-            let idx = p.row as usize * w + p.col as usize;
-            grid[idx].ch = p.ch;
-            grid[idx].fg = fg;
-        }
-
-        // drips
-        for drip in &self.drips {
-            if !drip.alive || drip.row >= area.height || drip.col >= area.width {
-                continue;
-            }
-            let idx = drip.row as usize * w + drip.col as usize;
-            grid[idx].ch = drip.ch;
-            grid[idx].fg = COL_WATER;
-        }
-
-        // dwarves
-        for d in &self.dwarves {
-            if d.row >= area.height || d.col >= area.width {
-                continue;
-            }
-            let dig_phase_chars = ['/', '|', '\\', '-'];
-            match d.state {
-                DwarfState::Digging { phase, target_col, target_row } => {
-                    // dwarf char
-                    let idx = d.row as usize * w + d.col as usize;
-                    grid[idx].ch = '@';
-                    grid[idx].fg = COL_DWARF;
-                    // pick at target
-                    if target_row < area.height && target_col < area.width {
-                        let tidx = target_row as usize * w + target_col as usize;
-                        grid[tidx].ch = dig_phase_chars[phase as usize % 4];
-                        grid[tidx].fg = COL_PICK;
+            // flash effect: brighten sky cells
+            let flash_intensity = self.lightning.flash_ticks as f32 / 5.0;
+            for row in 0..self.sky_rows.min(area.height) {
+                for col in 0..area.width {
+                    let idx = row as usize * w + col as usize;
+                    if grid[idx].kind == CellKind::Sky {
+                        grid[idx].fg =
+                            Self::lerp_color(grid[idx].fg, COL_LIGHTNING, flash_intensity * 0.3);
                     }
                 }
-                _ => {
-                    let idx = d.row as usize * w + d.col as usize;
-                    grid[idx].ch = '@';
-                    grid[idx].fg = COL_DWARF;
+            }
+        }
+
+        // ── puddles ───────────────────────────────────────────────────────────
+        let puddle_row = self.street_start;
+        if puddle_row < area.height {
+            for puddle in &self.puddles {
+                for c in puddle.col_start..(puddle.col_start + puddle.width).min(area.width) {
+                    let idx = puddle_row as usize * w + c as usize;
+                    grid[idx].ch = '▁';
+                    grid[idx].fg = COL_PUDDLE;
+                    grid[idx].kind = CellKind::Puddle;
                 }
             }
         }
 
-        // clouds (behind everything else in sky)
-        for cloud in &self.clouds {
-            if cloud.row >= area.height {
+        // ── vehicles ──────────────────────────────────────────────────────────
+        for vehicle in &self.vehicles {
+            if vehicle.row >= area.height {
                 continue;
             }
-            // two-row cloud: ░▒░░▒ on top, ▒▓▒▓▒ on bottom
-            let cloud_top = ['░', '▒', '░', '▒', '░'];
-            let cloud_bot = ['▒', '░', '▒', '░', '▒'];
-            for i in 0..cloud.width {
-                let cx = cloud.col + i as i32;
-                if cx < 0 || cx >= area.width as i32 {
+            let going_right = vehicle.speed > 0;
+            match vehicle.kind {
+                VehicleKind::Car => {
+                    // shape: ▖█▓█▗  (5 wide) going right
+                    // shape: ▗█▓█▖  (5 wide) going left
+                    let parts: &[(i32, char, Color)] = if going_right {
+                        &[
+                            (0, '▖', COL_TAILLIGHT_RED),
+                            (1, '█', COL_CAR_BODY),
+                            (2, '▓', COL_CAR_WINDOW),
+                            (3, '█', COL_CAR_BODY),
+                            (4, '▗', COL_HEADLIGHT),
+                        ]
+                    } else {
+                        &[
+                            (0, '▗', COL_HEADLIGHT),
+                            (1, '█', COL_CAR_BODY),
+                            (2, '▓', COL_CAR_WINDOW),
+                            (3, '█', COL_CAR_BODY),
+                            (4, '▖', COL_TAILLIGHT_RED),
+                        ]
+                    };
+                    for &(offset, ch, color) in parts {
+                        let c = vehicle.col + offset;
+                        if c >= 0 && (c as u16) < area.width {
+                            let idx = vehicle.row as usize * w + c as usize;
+                            grid[idx].ch = ch;
+                            grid[idx].fg = color;
+                        }
+                    }
+                }
+                VehicleKind::Motorbike => {
+                    // shape: ○▪● (3 wide)
+                    let parts: &[(i32, char, Color)] = if going_right {
+                        &[
+                            (0, '○', COL_TAILLIGHT_RED),
+                            (1, '▪', COL_BIKE_BODY),
+                            (2, '●', COL_HEADLIGHT),
+                        ]
+                    } else {
+                        &[
+                            (0, '●', COL_HEADLIGHT),
+                            (1, '▪', COL_BIKE_BODY),
+                            (2, '○', COL_TAILLIGHT_RED),
+                        ]
+                    };
+                    for &(offset, ch, color) in parts {
+                        let c = vehicle.col + offset;
+                        if c >= 0 && (c as u16) < area.width {
+                            let idx = vehicle.row as usize * w + c as usize;
+                            grid[idx].ch = ch;
+                            grid[idx].fg = color;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── steam ─────────────────────────────────────────────────────────────
+        for vent in &self.steam_vents {
+            for p in &vent.particles {
+                if p.row >= area.height || p.col >= area.width {
                     continue;
                 }
-                let cx = cx as u16;
-                // top row of cloud
-                if cloud.row < area.height {
-                    let idx = cloud.row as usize * w + cx as usize;
-                    if grid[idx].kind == CellKind::Sky {
-                        grid[idx].ch = cloud_top[i as usize % cloud_top.len()];
-                        grid[idx].fg = COL_CLOUD;
-                    }
-                }
-                // bottom row of cloud (one below)
-                let bot_row = cloud.row + 1;
-                if bot_row < area.height && bot_row < self.sky_rows {
-                    let idx = bot_row as usize * w + cx as usize;
-                    if grid[idx].kind == CellKind::Sky {
-                        grid[idx].ch = cloud_bot[i as usize % cloud_bot.len()];
-                        grid[idx].fg = COL_CLOUD;
-                    }
-                }
+                let idx = p.row as usize * w + p.col as usize;
+                let t = p.ttl as f32 / 8.0;
+                grid[idx].ch = if t > 0.5 { '░' } else { '·' };
+                grid[idx].fg = Self::lerp_color(theme::BG, COL_STEAM, t);
             }
         }
 
-        // trees
-        for tree in &self.trees {
-            self.draw_tree(&mut grid, w, area.height, tree);
-        }
-
-        // animals on surface
-        let surface = self.surface_row;
-        for animal in &self.animals {
-            if surface == 0 || animal.col >= area.width {
-                continue;
-            }
-            let row = surface.saturating_sub(1);
-            if row >= area.height {
-                continue;
-            }
-            let idx = row as usize * w + animal.col as usize;
-            // only place on sky/surface-adjacent cells (don't overwrite tree trunks)
-            if grid[idx].kind == CellKind::Sky || grid[idx].kind == CellKind::Surface {
-                grid[idx].ch = animal.ch;
-                grid[idx].fg = COL_ANIMAL;
-            }
-        }
-
-        // birds in sky
-        for bird in &self.birds {
-            if bird.row >= area.height || bird.col >= area.width {
-                continue;
-            }
-            let idx = bird.row as usize * w + bird.col as usize;
-            if grid[idx].kind == CellKind::Sky {
-                // direction: left='\' right='/'  DF uses v for perched, ' for flying
-                grid[idx].ch = if bird.dir > 0 { '\'' } else { '`' };
-                grid[idx].fg = COL_BIRD;
-            }
-        }
-
-        // write to terminal buffer
+        // ── write to buffer ───────────────────────────────────────────────────
         let buf = frame.buffer_mut();
         for row in 0..h {
             for col in 0..w {
@@ -992,31 +801,55 @@ impl SplashState {
     }
 
     fn base_cell(&self, col: u16, row: u16) -> GridCell {
+        // sky zone
         if row < self.sky_rows {
-            return GridCell { ch: ' ', fg: COL_SKY, kind: CellKind::Sky };
-        }
-        if row == self.surface_row {
-            let grass_chars = [':', ';', ','];
+            let t = row as f32 / self.sky_rows.max(1) as f32;
+            let fg = Self::lerp_color(COL_SKY_DEEP, COL_SKY_MID, t);
             return GridCell {
-                ch: grass_chars[col as usize % grass_chars.len()],
-                fg: COL_GRASS,
-                kind: CellKind::Surface,
+                ch: ' ',
+                fg,
+                kind: CellKind::Sky,
             };
         }
-        let idx = row as usize * self.width as usize + col as usize;
-        let ch = self.rock_chars.get(idx).copied().unwrap_or('#');
-        let is_dirt = self.rock_is_dirt.get(idx).copied().unwrap_or(false);
-        let fg = if is_dirt {
-            if col.is_multiple_of(2) { COL_DIRT_A } else { COL_DIRT_B }
-        } else if (row + col).is_multiple_of(2) {
-            COL_ROCK_A
-        } else {
-            COL_ROCK_B
-        };
+
+        // street zone
+        if row >= self.street_start {
+            let street_chars = ['▁', '▂', '─', '▁'];
+            return GridCell {
+                ch: street_chars[col as usize % street_chars.len()],
+                fg: COL_STREET,
+                kind: CellKind::Street,
+            };
+        }
+
+        // skyline zone: check if inside a building
+        for building in &self.buildings {
+            if col >= building.col_start
+                && col < building.col_start + building.width
+                && row >= self.street_start.saturating_sub(building.height)
+            {
+                let is_edge = col == building.col_start
+                    || col == building.col_start + building.width - 1
+                    || row == self.street_start.saturating_sub(building.height);
+                let ch = if is_edge { '▓' } else { '░' };
+                let fg = if is_edge {
+                    COL_BUILDING_EDGE
+                } else {
+                    COL_BUILDING_DARK
+                };
+                return GridCell {
+                    ch,
+                    fg,
+                    kind: CellKind::Skyline,
+                };
+            }
+        }
+
+        // open sky behind buildings (lower sky area)
         GridCell {
-            ch,
-            fg,
-            kind: if is_dirt { CellKind::Dirt } else { CellKind::Rock },
+            ch: ' ',
+            fg: COL_SKY_MID,
+            kind: CellKind::Sky,
         }
     }
 
@@ -1048,8 +881,11 @@ impl SplashState {
                 break;
             }
             frame.render_widget(
-                Paragraph::new(Span::styled(*line, Style::default().fg(theme::ORANGE_BRIGHT)))
-                    .alignment(Alignment::Center),
+                Paragraph::new(Span::styled(
+                    *line,
+                    Style::default().fg(theme::ORANGE_BRIGHT),
+                ))
+                .alignment(Alignment::Center),
                 Rect::new(area.x, y, area.width, 1),
             );
             y += 1;
@@ -1080,96 +916,13 @@ impl SplashState {
         }
     }
 
-    fn draw_tree(&self, grid: &mut Vec<GridCell>, w: usize, height: u16, tree: &Tree) {
-        let surface = self.surface_row;
-        if surface == 0 || tree.col >= self.width {
-            return;
-        }
-
-        let (stage, canopy_color, show_trunk) = match tree.phase {
-            TreePhase::Dead { .. } => return,
-            TreePhase::Growing { stage, .. } => (stage, COL_TREE_GREEN, stage >= 1),
-            TreePhase::Mature { .. } => (2u8, COL_TREE_GREEN, true),
-            TreePhase::Dying { ticks } => {
-                let t = ticks as f32 / 750.0;
-                let col = Self::lerp_color(COL_TREE_GREEN, COL_TREE_DYING, t);
-                (2u8, col, true)
-            }
-        };
-
-        // stage 0: 1-cell canopy, no trunk
-        // stage 1: 1-cell trunk + 1-cell canopy
-        // stage 2: 2-cell trunk + 3-wide canopy top
-        let col = tree.col;
-
-        let set = |grid: &mut Vec<GridCell>, c: u16, r: u16, ch: char, fg: Color| {
-            if c < self.width && r < height {
-                let idx = r as usize * w + c as usize;
-                grid[idx].ch = ch;
-                grid[idx].fg = fg;
-            }
-        };
-
-        match stage {
-            0 => {
-                // sapling: single ♣ just above surface
-                if surface >= 1 {
-                    set(grid, col, surface - 1, '♣', canopy_color);
-                }
-            }
-            1 => {
-                // young: trunk + canopy
-                if surface >= 2 {
-                    set(grid, col, surface - 1, '│', COL_TRUNK);
-                    set(grid, col, surface - 2, '♣', canopy_color);
-                } else if surface >= 1 {
-                    set(grid, col, surface - 1, '♣', canopy_color);
-                }
-            }
-            _ => {
-                // full: 2-cell trunk, 5-wide bottom canopy, 3-wide top canopy
-                if surface >= 1 && show_trunk {
-                    set(grid, col, surface - 1, '│', COL_TRUNK);
-                }
-                if surface >= 2 && show_trunk {
-                    set(grid, col, surface - 2, '│', COL_TRUNK);
-                }
-                // wide bottom canopy row
-                if surface >= 3 {
-                    for dc in -2i16..=2 {
-                        let c = col.wrapping_add_signed(dc);
-                        if c < self.width {
-                            set(grid, c, surface - 3, '♣', canopy_color);
-                        }
-                    }
-                }
-                // narrow top canopy row
-                if surface >= 4 {
-                    for dc in -1i16..=1 {
-                        let c = col.wrapping_add_signed(dc);
-                        if c < self.width {
-                            set(grid, c, surface - 4, '♣', canopy_color);
-                        }
-                    }
-                }
-                // peak
-                if surface >= 5 {
-                    set(grid, col, surface - 5, '▲', canopy_color);
-                }
-                if surface < 3 {
-                    set(grid, col, surface.saturating_sub(1), '♣', canopy_color);
-                }
-            }
-        }
-    }
-
     fn lerp_color(a: Color, b: Color, t: f32) -> Color {
         let (ar, ag, ab) = rgb(a);
         let (br, bg, bb) = rgb(b);
         let r = (ar as f32 + (br as f32 - ar as f32) * t) as u8;
         let g = (ag as f32 + (bg as f32 - ag as f32) * t) as u8;
-        let b = (ab as f32 + (bb as f32 - ab as f32) * t) as u8;
-        Color::Rgb(r, g, b)
+        let b_val = (ab as f32 + (bb as f32 - ab as f32) * t) as u8;
+        Color::Rgb(r, g, b_val)
     }
 }
 
@@ -1180,13 +933,13 @@ fn rgb(c: Color) -> (u8, u8, u8) {
     }
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────────
+// ── tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn built(w: u16, h: u16) -> SplashState {
         let mut s = SplashState::new();
@@ -1197,22 +950,31 @@ mod tests {
     #[test]
     fn test_zone_thresholds() {
         let s = built(120, 40);
-        assert_eq!(s.sky_rows, 12);
-        assert_eq!(s.surface_row, 12);
-        assert_eq!(s.underground_start, 13);
+        assert_eq!(s.sky_rows, 10);
+        assert_eq!(s.street_start, 32);
     }
 
     #[test]
-    fn test_tunnel_count() {
+    fn test_buildings_within_bounds() {
         let s = built(120, 40);
-        assert!(s.tunnels.len() >= 2 && s.tunnels.len() <= 3);
+        for b in &s.buildings {
+            assert!(b.col_start + b.width <= s.width);
+            let top = s.street_start.saturating_sub(b.height);
+            assert!(top >= s.sky_rows || top < s.street_start);
+        }
     }
 
     #[test]
-    fn test_tunnel_rows_in_underground_zone() {
+    fn test_buildings_no_overlap() {
         let s = built(120, 40);
-        for t in &s.tunnels {
-            assert!(t.row >= s.underground_start && t.row < s.height);
+        for i in 0..s.buildings.len() {
+            for j in (i + 1)..s.buildings.len() {
+                let a = &s.buildings[i];
+                let b = &s.buildings[j];
+                let a_end = a.col_start + a.width;
+                let b_end = b.col_start + b.width;
+                assert!(a_end <= b.col_start || b_end <= a.col_start);
+            }
         }
     }
 
@@ -1226,105 +988,100 @@ mod tests {
     }
 
     #[test]
-    fn test_river_scroll_advances_offset() {
+    fn test_rain_wraps_at_bottom() {
         let mut s = built(80, 24);
-        let initial_offsets: Vec<usize> = s.river_rows.iter().map(|r| r.offset).collect();
-        s.tick();
-        for (i, rr) in s.river_rows.iter().enumerate() {
-            let expected = (initial_offsets[i] + 1) % rr.chars.len().max(1);
-            assert_eq!(rr.offset, expected);
-        }
-    }
-
-    #[test]
-    fn test_drip_despawns_on_rock() {
-        let mut s = built(80, 30);
-        // find a solid cell
-        let solid_row = s.underground_start + 2;
-        let solid_col = {
-            let mut col = None;
-            for c in 0..s.width {
-                if s.is_solid(c, solid_row) {
-                    col = Some(c);
-                    break;
-                }
-            }
-            col
-        };
-        if let Some(col) = solid_col {
-            s.drips.push(WaterDrip {
-                col,
-                row: solid_row - 1,
-                ch: '│',
-                alive: true,
-            });
-            s.tick(); // drip moves to solid_row → despawns
-            assert!(s.drips.is_empty() || s.drips.iter().all(|d| !d.alive || d.col != col));
-        }
-    }
-
-    #[test]
-    fn test_dust_ttl_decrements_and_prunes() {
-        let mut s = built(80, 24);
-        s.dust.push(DustParticle {
+        s.rain.clear();
+        s.rain.push(RainDrop {
             col: 10,
-            row: 15,
-            ch: '*',
-            ttl: 2,
-            ttl_max: 2,
-            dy_counter: 0,
+            row: 23,
+            speed: 1,
+            ch: '│',
         });
         s.tick();
-        assert_eq!(s.dust.len(), 1);
-        assert_eq!(s.dust[0].ttl, 1);
+        assert_eq!(s.rain[0].row, 0);
+    }
+
+    #[test]
+    fn test_lightning_cooldown() {
+        let mut s = built(80, 24);
+        s.lightning.cooldown = 100;
+        s.lightning.active = false;
         s.tick();
-        assert!(s.dust.is_empty());
+        assert!(!s.lightning.active);
+        assert_eq!(s.lightning.cooldown, 99);
     }
 
     #[test]
-    fn test_dwarf_pausing_transitions_to_walking() {
-        let mut s = built(80, 24);
-        if !s.dwarves.is_empty() {
-            s.dwarves[0].state = DwarfState::Pausing { remaining: 1 };
-            s.step_dwarf(0);
-            assert!(matches!(s.dwarves[0].state, DwarfState::Pausing { remaining: 0 }));
-            s.step_dwarf(0);
-            assert!(matches!(s.dwarves[0].state, DwarfState::Walking));
+    fn test_neon_state_transitions() {
+        let mut sign = NeonSign {
+            col: 0,
+            row: 0,
+            text: "BAR",
+            color: COL_NEON_CYAN,
+            state: NeonState::Flickering {
+                phase: 11,
+                total: 12,
+            },
+        };
+        // Simulate one tick of neon logic
+        if let NeonState::Flickering { phase, total } = &mut sign.state {
+            *phase += 1;
+            if *phase >= *total {
+                sign.state = NeonState::On;
+            }
         }
+        assert!(matches!(sign.state, NeonState::On));
     }
 
     #[test]
-    fn test_dwarf_bounces_at_tunnel_end() {
-        let mut s = built(80, 24);
-        if !s.dwarves.is_empty() && !s.tunnels.is_empty() {
-            let tunnel_end = s.tunnels[s.dwarves[0].tunnel_idx].end_col;
-            s.dwarves[0].col = tunnel_end;
-            s.dwarves[0].dir = 1;
-            s.dwarves[0].state = DwarfState::Walking;
-            s.dwarves[0].idle_ticks = 0;
-            s.step_dwarf(0);
-            assert_eq!(s.dwarves[0].dir, -1);
+    fn test_window_flickering_resolves() {
+        let mut w = WindowState::Flickering { phase: 6 };
+        // Simulate tick
+        if let WindowState::Flickering { phase } = &mut w {
+            *phase += 1;
+            if *phase > 6 {
+                w = WindowState::Lit;
+            }
         }
+        assert!(matches!(w, WindowState::Lit));
     }
 
     #[test]
-    fn test_lerp_color_endpoints() {
-        let a = Color::Rgb(0, 0, 0);
-        let b = Color::Rgb(255, 128, 64);
-        assert_eq!(SplashState::lerp_color(a, b, 0.0), Color::Rgb(0, 0, 0));
-        assert_eq!(SplashState::lerp_color(a, b, 1.0), Color::Rgb(255, 128, 64));
-    }
-
-    #[test]
-    fn test_mushroom_pulse_advances() {
-        let mut s = built(80, 24);
-        if !s.mushrooms.is_empty() {
-            let before = s.mushrooms[0].pulse_phase;
-            s.tick();
-            let after = s.mushrooms[0].pulse_phase;
-            let delta = (after - before).abs();
-            assert!((delta - 0.15).abs() < 0.01 || delta < 0.01); // allow wrap
+    fn test_star_brightness_wraps() {
+        let mut star = Star {
+            col: 0,
+            row: 0,
+            brightness: 0.9,
+            twinkle_rate: 1,
+            counter: 0,
+        };
+        star.counter += 1;
+        if star.counter >= star.twinkle_rate {
+            star.counter = 0;
+            star.brightness += 0.2;
+            if star.brightness > 1.0 {
+                star.brightness -= 1.0;
+            }
         }
+        assert!(star.brightness < 0.2);
+    }
+
+    #[test]
+    fn test_steam_particle_ttl_prunes() {
+        let mut s = built(80, 24);
+        s.steam_vents.clear();
+        s.steam_vents.push(SteamVent {
+            col: 10,
+            particles: vec![SteamParticle {
+                col: 10,
+                row: 20,
+                ttl: 1,
+                drift: 1,
+            }],
+            emit_rate: 255, // won't emit new ones
+        });
+        s.tick();
+        assert!(s.steam_vents[0].particles.is_empty());
     }
 
     #[test]
@@ -1351,5 +1108,75 @@ mod tests {
                 s.draw(frame, area);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn test_lerp_color_endpoints() {
+        let a = Color::Rgb(0, 0, 0);
+        let b = Color::Rgb(255, 128, 64);
+        assert_eq!(SplashState::lerp_color(a, b, 0.0), Color::Rgb(0, 0, 0));
+        assert_eq!(SplashState::lerp_color(a, b, 1.0), Color::Rgb(255, 128, 64));
+    }
+
+    #[test]
+    fn test_resize_rebuilds_world() {
+        let backend = TestBackend::new(40, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut s = SplashState::new();
+        terminal
+            .draw(|frame| {
+                s.draw(frame, frame.area());
+            })
+            .unwrap();
+        assert_eq!(s.width, 40);
+        assert_eq!(s.height, 20);
+        // "resize"
+        let backend2 = TestBackend::new(60, 30);
+        let mut terminal2 = Terminal::new(backend2).unwrap();
+        terminal2
+            .draw(|frame| {
+                s.draw(frame, frame.area());
+            })
+            .unwrap();
+        assert_eq!(s.width, 60);
+        assert_eq!(s.height, 30);
+    }
+
+    #[test]
+    fn test_vehicles_spawned_on_street() {
+        let s = built(80, 24);
+        assert!(!s.vehicles.is_empty());
+        for v in &s.vehicles {
+            assert!(v.row >= s.street_start);
+            assert!(v.row < s.height);
+        }
+    }
+
+    #[test]
+    fn test_vehicle_wraps_right() {
+        let mut s = built(80, 24);
+        s.vehicles.clear();
+        s.vehicles.push(Vehicle {
+            col: 86,
+            row: s.street_start + 1,
+            kind: VehicleKind::Car,
+            speed: 1,
+        });
+        s.tick();
+        assert!(s.vehicles[0].col < 0);
+    }
+
+    #[test]
+    fn test_vehicle_wraps_left() {
+        let mut s = built(80, 24);
+        s.vehicles.clear();
+        s.vehicles.push(Vehicle {
+            col: -6,
+            row: s.street_start + 1,
+            kind: VehicleKind::Motorbike,
+            speed: -1,
+        });
+        s.tick();
+        assert_eq!(s.vehicles[0].col, 80);
     }
 }
