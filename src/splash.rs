@@ -38,6 +38,12 @@ const COL_TAILLIGHT_RED: Color = Color::Rgb(0xc0, 0x20, 0x10);
 const COL_HEADLIGHT: Color = Color::Rgb(0xe0, 0xd0, 0x80);
 const COL_BIKE_BODY: Color = Color::Rgb(0x50, 0x30, 0x60);
 
+const COL_SAUCER_BODY: Color = Color::Rgb(0x60, 0x80, 0xa0);
+const COL_SAUCER_DOME: Color = Color::Rgb(0x90, 0xd0, 0xff);
+const COL_SAUCER_BEAM: Color = Color::Rgb(0x60, 0xff, 0x80);
+const COL_BILLBOARD_FRAME: Color = Color::Rgb(0x30, 0x38, 0x50);
+const COL_BILLBOARD_TEXT: Color = Color::Rgb(0x50, 0x70, 0x90);
+
 // ── cell types ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +158,37 @@ struct Vehicle {
     speed: i8,
 }
 
+#[derive(Debug, Clone)]
+struct FlyingSaucer {
+    col: i32,
+    row: u16,
+    speed: i8,
+    beam_on: bool,
+    beam_timer: u8,
+}
+
+#[derive(Debug, Clone)]
+struct Billboard {
+    col: u16,
+    row: u16,
+    lines: &'static [&'static str],
+    color: Color,
+}
+
+#[derive(Debug, Clone)]
+struct GlitchChar {
+    index: usize,
+    ch: char,
+    ttl: u8,
+}
+
+// neon sign extended with per-char glitch
+#[derive(Debug, Clone)]
+struct NeonGlitch {
+    sign_idx: usize,
+    glitches: Vec<GlitchChar>,
+}
+
 // ── main state ───────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -162,18 +199,32 @@ pub struct SplashState {
     street_start: u16,
     buildings: Vec<Building>,
     neon_signs: Vec<NeonSign>,
+    neon_glitches: Vec<NeonGlitch>,
     stars: Vec<Star>,
     rain: Vec<RainDrop>,
     lightning: Lightning,
     steam_vents: Vec<SteamVent>,
     puddles: Vec<Puddle>,
     vehicles: Vec<Vehicle>,
+    saucers: Vec<FlyingSaucer>,
+    billboards: Vec<Billboard>,
     pub tick_count: u64,
 }
 
 const NEON_TEXTS: &[&str] = &["BAR", "HOTEL", "NET", "24h", "///", "SYS"];
 const NEON_COLORS: &[Color] = &[COL_NEON_CYAN, COL_NEON_PINK, COL_NEON_AMBER];
 const RAIN_CHARS: &[char] = &['│', '╎', '|', '·'];
+const GLITCH_CHARS: &[char] = &['░', '▒', '▓', '?', '■', '%', '#', '@', '!', '~'];
+
+const BILLBOARD_ADS: &[&[&str]] = &[
+    &["┌──────┐", "│NEURO │", "│ LINK │", "└──────┘"],
+    &["┌────────┐", "│AUGM3NT │", "│ CORP   │", "└────────┘"],
+    &["╔══════╗", "║B1O-SYS║", "║ v2.4  ║", "╚══════╝"],
+    &["┌──────┐", "│ OMNI │", "│ NET  │", "└──────┘"],
+    &["╔════╗", "║XENO║", "║TECH║", "╚════╝"],
+    &["┌───────┐", "│SYNTH-X│", "│ MK-IV │", "└───────┘"],
+    &["╔═════╗", "║VAULT║", "║  9  ║", "╚═════╝"],
+];
 
 impl SplashState {
     pub fn new() -> Self {
@@ -184,6 +235,7 @@ impl SplashState {
             street_start: 0,
             buildings: Vec::new(),
             neon_signs: Vec::new(),
+            neon_glitches: Vec::new(),
             stars: Vec::new(),
             rain: Vec::new(),
             lightning: Lightning {
@@ -195,6 +247,8 @@ impl SplashState {
             steam_vents: Vec::new(),
             puddles: Vec::new(),
             vehicles: Vec::new(),
+            saucers: Vec::new(),
+            billboards: Vec::new(),
             tick_count: 0,
         }
     }
@@ -210,9 +264,12 @@ impl SplashState {
         self.stars.clear();
         self.buildings.clear();
         self.neon_signs.clear();
+        self.neon_glitches.clear();
         self.rain.clear();
         self.steam_vents.clear();
         self.puddles.clear();
+        self.saucers.clear();
+        self.billboards.clear();
         self.lightning.active = false;
         self.lightning.cooldown = fastrand::u16(100..300);
         self.lightning.bolt_segments.clear();
@@ -370,6 +427,63 @@ impl SplashState {
                 });
             }
         }
+
+        // ── flying saucers ────────────────────────────────────────────────────
+        // Saucers start off-screen and fly across once, then disappear.
+        // Stagger their entry with an off-screen head start so they don't all appear at once.
+        if self.sky_rows >= 3 && fastrand::u8(0..3) != 0 {
+            let n_saucers = fastrand::u8(1..=2) as usize;
+            for i in 0..n_saucers {
+                let row = fastrand::u16(0..self.sky_rows.saturating_sub(1));
+                let going_right = fastrand::bool();
+                let saucer_w: i32 = 7;
+                // stagger: first saucer enters immediately, next one starts further back
+                let stagger = (i as i32) * (width as i32 / 2);
+                let col = if going_right {
+                    -saucer_w - stagger
+                } else {
+                    width as i32 + stagger
+                };
+                self.saucers.push(FlyingSaucer {
+                    col,
+                    row,
+                    speed: if going_right { 1 } else { -1 },
+                    beam_on: false,
+                    beam_timer: fastrand::u8(60..120),
+                });
+            }
+        }
+
+        // ── billboards ────────────────────────────────────────────────────────
+        let n_boards = fastrand::u8(2..=4) as usize;
+        let mut board_attempts = 0usize;
+        while self.billboards.len() < n_boards && board_attempts < 60 {
+            board_attempts += 1;
+            if self.buildings.is_empty() {
+                break;
+            }
+            let b = &self.buildings[fastrand::usize(0..self.buildings.len())];
+            let ad = BILLBOARD_ADS[fastrand::usize(0..BILLBOARD_ADS.len())];
+            let ad_w = ad.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+            let ad_h = ad.len() as u16;
+            if b.width < ad_w + 2 || b.height < ad_h + 2 {
+                continue;
+            }
+            let building_top = self.street_start.saturating_sub(b.height);
+            let col = b.col_start + (b.width.saturating_sub(ad_w)) / 2;
+            let row = building_top + fastrand::u16(1..b.height.saturating_sub(ad_h).max(1) + 1);
+            if row + ad_h >= self.street_start {
+                continue;
+            }
+            let color = if fastrand::u8(0..3) == 0 {
+                COL_NEON_PINK
+            } else if fastrand::u8(0..2) == 0 {
+                COL_NEON_AMBER
+            } else {
+                COL_BILLBOARD_TEXT
+            };
+            self.billboards.push(Billboard { col, row, lines: ad, color });
+        }
     }
 
     pub fn tick(&mut self) {
@@ -515,6 +629,59 @@ impl SplashState {
                 vehicle.col = self.width as i32;
             }
         }
+
+        // ── flying saucers ────────────────────────────────────────────────────
+        let saucer_w: i32 = 7;
+        for saucer in &mut self.saucers {
+            saucer.col += saucer.speed as i32;
+            saucer.beam_timer = saucer.beam_timer.saturating_sub(1);
+            if saucer.beam_timer == 0 {
+                saucer.beam_on = !saucer.beam_on;
+                saucer.beam_timer = if saucer.beam_on {
+                    fastrand::u8(5..15)
+                } else {
+                    fastrand::u8(30..80)
+                };
+            }
+        }
+        self.saucers.retain(|s| {
+            if s.speed > 0 {
+                s.col <= self.width as i32 + saucer_w
+            } else {
+                s.col >= -saucer_w
+            }
+        });
+
+        // ── neon glitches ─────────────────────────────────────────────────────
+        // decay existing glitches
+        for ng in &mut self.neon_glitches {
+            for g in &mut ng.glitches {
+                g.ttl = g.ttl.saturating_sub(1);
+            }
+            ng.glitches.retain(|g| g.ttl > 0);
+        }
+        // spawn new glitches on flickering/on signs
+        for (i, sign) in self.neon_signs.iter().enumerate() {
+            if matches!(sign.state, NeonState::Off) {
+                continue;
+            }
+            if fastrand::u16(0..80) != 0 {
+                continue;
+            }
+            let text_len = sign.text.chars().count();
+            if text_len == 0 {
+                continue;
+            }
+            let char_idx = fastrand::usize(0..text_len);
+            let glitch_ch = GLITCH_CHARS[fastrand::usize(0..GLITCH_CHARS.len())];
+            let ng = self.neon_glitches.iter_mut().find(|ng| ng.sign_idx == i);
+            let glitch = GlitchChar { index: char_idx, ch: glitch_ch, ttl: fastrand::u8(2..6) };
+            if let Some(ng) = ng {
+                ng.glitches.push(glitch);
+            } else {
+                self.neon_glitches.push(NeonGlitch { sign_idx: i, glitches: vec![glitch] });
+            }
+        }
     }
 
     fn trigger_lightning(&mut self) {
@@ -570,6 +737,75 @@ impl SplashState {
                     grid[idx].fg = COL_STAR;
                 } else {
                     grid[idx].ch = ' ';
+                }
+            }
+        }
+
+        // ── flying saucers ────────────────────────────────────────────────────
+        // Two rows per saucer:
+        //   row+0 (dome):  " ·(·)· "   chars: space ·(·)· space
+        //   row+1 (body):  "·═╪═╪═·"   chars: · ═ ╪ ═ ╪ ═ ·
+        // beam: vertical line below body if beam_on
+        for saucer in &self.saucers {
+            let dome_row = saucer.row;
+            let body_row = saucer.row + 1;
+
+            let dome_chars: &[(i32, char, Color)] = &[
+                (1, '·', COL_SAUCER_BODY),
+                (2, '(', COL_SAUCER_BODY),
+                (3, '·', COL_SAUCER_DOME),
+                (4, ')', COL_SAUCER_BODY),
+                (5, '·', COL_SAUCER_BODY),
+            ];
+            let body_chars: &[(i32, char, Color)] = &[
+                (0, '·', COL_SAUCER_BODY),
+                (1, '═', COL_SAUCER_BODY),
+                (2, '╪', COL_SAUCER_BODY),
+                (3, '═', COL_SAUCER_BODY),
+                (4, '╪', COL_SAUCER_BODY),
+                (5, '═', COL_SAUCER_BODY),
+                (6, '·', COL_SAUCER_BODY),
+            ];
+
+            if dome_row < area.height {
+                for &(off, ch, color) in dome_chars {
+                    let c = saucer.col + off;
+                    if c >= 0 && (c as u16) < area.width {
+                        let idx = dome_row as usize * w + c as usize;
+                        if grid[idx].kind == CellKind::Sky {
+                            grid[idx].ch = ch;
+                            grid[idx].fg = color;
+                        }
+                    }
+                }
+            }
+            if body_row < area.height {
+                for &(off, ch, color) in body_chars {
+                    let c = saucer.col + off;
+                    if c >= 0 && (c as u16) < area.width {
+                        let idx = body_row as usize * w + c as usize;
+                        if grid[idx].kind == CellKind::Sky {
+                            grid[idx].ch = ch;
+                            grid[idx].fg = color;
+                        }
+                    }
+                }
+            }
+
+            // tractor beam: 3 cells below body, centered
+            if saucer.beam_on {
+                let beam_col = saucer.col + 3;
+                for beam_r in (body_row + 1)..=(body_row + 3) {
+                    if beam_r >= area.height {
+                        break;
+                    }
+                    if beam_col >= 0 && (beam_col as u16) < area.width {
+                        let idx = beam_r as usize * w + beam_col as usize;
+                        if grid[idx].kind == CellKind::Sky {
+                            grid[idx].ch = '╎';
+                            grid[idx].fg = COL_SAUCER_BEAM;
+                        }
+                    }
                 }
             }
         }
@@ -632,8 +868,37 @@ impl SplashState {
             }
         }
 
+        // ── billboards ────────────────────────────────────────────────────────
+        for board in &self.billboards {
+            for (li, line) in board.lines.iter().enumerate() {
+                let row = board.row + li as u16;
+                if row >= area.height || row >= self.street_start {
+                    continue;
+                }
+                for (ci, ch) in line.chars().enumerate() {
+                    let col = board.col + ci as u16;
+                    if col >= area.width {
+                        break;
+                    }
+                    let idx = row as usize * w + col as usize;
+                    if grid[idx].kind == CellKind::Skyline {
+                        let fg = if ch == '│' || ch == '─' || ch == '┌' || ch == '┐'
+                            || ch == '└' || ch == '┘' || ch == '╔' || ch == '╗'
+                            || ch == '╚' || ch == '╝' || ch == '║' || ch == '═'
+                        {
+                            COL_BILLBOARD_FRAME
+                        } else {
+                            board.color
+                        };
+                        grid[idx].ch = ch;
+                        grid[idx].fg = fg;
+                    }
+                }
+            }
+        }
+
         // ── neon signs ────────────────────────────────────────────────────────
-        for sign in &self.neon_signs {
+        for (sign_idx, sign) in self.neon_signs.iter().enumerate() {
             if sign.row >= area.height {
                 continue;
             }
@@ -643,13 +908,18 @@ impl SplashState {
                 NeonState::Flickering { phase, .. } => phase % 3 != 0,
             };
             let fg = if visible { sign.color } else { COL_NEON_DIM };
+            let glitches = self.neon_glitches.iter().find(|ng| ng.sign_idx == sign_idx);
             for (i, ch) in sign.text.chars().enumerate() {
                 let c = sign.col + i as u16;
                 if c >= area.width {
                     break;
                 }
                 let idx = sign.row as usize * w + c as usize;
-                grid[idx].ch = ch;
+                let render_ch = glitches
+                    .and_then(|ng| ng.glitches.iter().find(|g| g.index == i))
+                    .map(|g| g.ch)
+                    .unwrap_or(ch);
+                grid[idx].ch = render_ch;
                 grid[idx].fg = fg;
             }
         }
