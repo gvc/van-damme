@@ -472,7 +472,11 @@ fn launch_tmux_session(
             .as_secs();
         let dir = {
             let t = directory.trim_end_matches('/');
-            if t.is_empty() { "/".to_string() } else { t.to_string() }
+            if t.is_empty() {
+                "/".to_string()
+            } else {
+                t.to_string()
+            }
         };
         db.sessions.push(session::SessionRecord {
             tmux_session_id: tmux_session.session_id,

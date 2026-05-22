@@ -12,7 +12,10 @@ pub enum GitUndo {
     /// Just checkout back to the original branch.
     CheckoutBranch(String),
     /// Checkout back to original branch AND delete the newly-created branch.
-    CheckoutAndDeleteBranch { original: String, created: String },
+    CheckoutAndDeleteBranch {
+        original: String,
+        created: String,
+    },
     Nothing,
 }
 
@@ -125,7 +128,12 @@ impl SessionDbAdapter for RealSessionDb {
     }
 
     fn update_tmux_id(&mut self, name: &str, id: &str) -> Result<()> {
-        if let Some(s) = self.db.sessions.iter_mut().find(|s| s.tmux_session_name == name) {
+        if let Some(s) = self
+            .db
+            .sessions
+            .iter_mut()
+            .find(|s| s.tmux_session_name == name)
+        {
             s.tmux_session_id = id.to_string();
         }
         self.db.save()
@@ -194,7 +202,11 @@ impl<'a> SessionLauncher<'a> {
 
         let dir = {
             let t = directory.trim_end_matches('/');
-            if t.is_empty() { "/".to_string() } else { t.to_string() }
+            if t.is_empty() {
+                "/".to_string()
+            } else {
+                t.to_string()
+            }
         };
 
         let created_at = std::time::SystemTime::now()
@@ -241,7 +253,10 @@ impl<'a> SessionLauncher<'a> {
         };
 
         // Step 4: DB update with real tmux session ID
-        if let Err(e) = self.db.update_tmux_id(&session_name, &tmux_session.session_id) {
+        if let Err(e) = self
+            .db
+            .update_tmux_id(&session_name, &tmux_session.session_id)
+        {
             let _ = self.tmux.kill_session(&session_name);
             let _ = self.db.remove_by_name(&session_name);
             let _ = self.git.undo(directory, git_undo);
@@ -320,7 +335,9 @@ mod tests {
         fn ok() -> Self {
             Self {
                 exists: false,
-                create_result: Ok(TmuxSession { session_id: "$1".to_string() }),
+                create_result: Ok(TmuxSession {
+                    session_id: "$1".to_string(),
+                }),
                 kill_calls: RefCell::new(vec![]),
             }
         }
@@ -341,12 +358,20 @@ mod tests {
             Ok(self.exists)
         }
         fn create_session(
-            &self, _name: &str, _dir: &str, _prompt: Option<&str>,
-            _claude_args: Option<&str>, _claude_session_id: &str, _use_worktree: bool,
-            _claude_command: &str, _model_id: Option<&str>,
+            &self,
+            _name: &str,
+            _dir: &str,
+            _prompt: Option<&str>,
+            _claude_args: Option<&str>,
+            _claude_session_id: &str,
+            _use_worktree: bool,
+            _claude_command: &str,
+            _model_id: Option<&str>,
         ) -> Result<TmuxSession> {
             match &self.create_result {
-                Ok(s) => Ok(TmuxSession { session_id: s.session_id.clone() }),
+                Ok(s) => Ok(TmuxSession {
+                    session_id: s.session_id.clone(),
+                }),
                 Err(_) => Err(color_eyre::eyre::eyre!("tmux failed")),
             }
         }
@@ -363,8 +388,15 @@ mod tests {
     }
 
     impl FakeDb {
-        fn ok() -> Self { Self::default() }
-        fn failing_update() -> Self { Self { fail_update: true, ..Default::default() } }
+        fn ok() -> Self {
+            Self::default()
+        }
+        fn failing_update() -> Self {
+            Self {
+                fail_update: true,
+                ..Default::default()
+            }
+        }
     }
 
     impl SessionDbAdapter for FakeDb {
@@ -380,7 +412,11 @@ mod tests {
             if self.fail_update {
                 return Err(color_eyre::eyre::eyre!("db update failed"));
             }
-            if let Some(s) = self.sessions.iter_mut().find(|s| s.tmux_session_name == name) {
+            if let Some(s) = self
+                .sessions
+                .iter_mut()
+                .find(|s| s.tmux_session_name == name)
+            {
                 s.tmux_session_id = id.to_string();
             }
             Ok(())

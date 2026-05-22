@@ -93,7 +93,11 @@ impl SessionList {
             let q = self.search_query.to_lowercase();
             self.all_sessions
                 .iter()
-                .filter(|s| shorten_path(&s.directory, usize::MAX).to_lowercase().contains(&q))
+                .filter(|s| {
+                    shorten_path(&s.directory, usize::MAX)
+                        .to_lowercase()
+                        .contains(&q)
+                })
                 .cloned()
                 .collect()
         };
@@ -232,7 +236,9 @@ impl SessionList {
                 self.list.move_down();
                 SessionListAction::None
             }
-            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
                 self.search_query.push(c);
                 self.apply_filter();
                 SessionListAction::None
@@ -541,9 +547,7 @@ impl SessionList {
 
         let content_area = chunks[1];
         let idle = self.last_activity.elapsed().as_secs() >= 60;
-        if !idle
-            && let Some(ref content) = self.preview_content
-        {
+        if !idle && let Some(ref content) = self.preview_content {
             let lines: Vec<Line> = content
                 .lines()
                 .map(|l| Line::raw(l.trim_end().to_string()))
@@ -652,7 +656,6 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
         rows[2],
     );
 }
-
 
 fn shorten_path(path: &str, max_len: usize) -> String {
     if max_len == 0 {
@@ -1038,9 +1041,15 @@ mod tests {
         let mut list = SessionList::new(sample_grouped_sessions());
         list.handle_key(key(KeyCode::Char('/')));
         // no filter — all visible
-        let first = list.list.selected_item().map(|s| s.tmux_session_name.clone());
+        let first = list
+            .list
+            .selected_item()
+            .map(|s| s.tmux_session_name.clone());
         list.handle_key(key(KeyCode::Down));
-        let second = list.list.selected_item().map(|s| s.tmux_session_name.clone());
+        let second = list
+            .list
+            .selected_item()
+            .map(|s| s.tmux_session_name.clone());
         assert_ne!(first, second);
     }
 
@@ -1048,11 +1057,17 @@ mod tests {
     fn test_search_jk_do_not_navigate() {
         let mut list = SessionList::new(sample_grouped_sessions());
         list.handle_key(key(KeyCode::Char('/')));
-        let before = list.list.selected_item().map(|s| s.tmux_session_name.clone());
+        let before = list
+            .list
+            .selected_item()
+            .map(|s| s.tmux_session_name.clone());
         list.handle_key(key(KeyCode::Char('j')));
         // 'j' appended to query, not navigation
         assert_eq!(list.search_query, "j");
-        let after = list.list.selected_item().map(|s| s.tmux_session_name.clone());
+        let after = list
+            .list
+            .selected_item()
+            .map(|s| s.tmux_session_name.clone());
         // selection unchanged (j filtered out /proj/b but alpha/beta still in /proj/a... wait, no)
         // /proj/a contains 'j'? No. /proj/b contains 'j'? No. "proj" contains 'j' — yes! "/proj/a" and "/proj/b" both contain 'j'
         // so all 3 sessions remain; selection stays same

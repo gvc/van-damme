@@ -14,7 +14,11 @@ impl DirCompleter {
     pub fn suggest(&self, input: &str) -> Option<String> {
         complete_path(input).and_then(|(completed, _)| {
             let suffix = completed.strip_prefix(input)?;
-            if suffix.is_empty() { None } else { Some(suffix.to_string()) }
+            if suffix.is_empty() {
+                None
+            } else {
+                Some(suffix.to_string())
+            }
         })
     }
 }
@@ -37,12 +41,9 @@ impl BranchCompleter {
         if matches.is_empty() {
             return None;
         }
-        let common = longest_common_prefix(&matches.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        if common == prefix {
-            None
-        } else {
-            Some(common)
-        }
+        let common =
+            longest_common_prefix(&matches.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        if common == prefix { None } else { Some(common) }
     }
 
     /// Returns the ghost-text suffix of the first matching branch, or None.
