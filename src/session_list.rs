@@ -17,7 +17,6 @@ fn group_key(s: &SessionRecord) -> &str {
     &s.directory
 }
 
-#[allow(dead_code)]
 fn is_worktree_session(s: &SessionRecord) -> bool {
     s.directory.contains("/.claude/worktrees/")
 }
@@ -164,6 +163,9 @@ impl SessionList {
                 KeyCode::Char('x') | KeyCode::Char('y') => {
                     self.kill_session(&target.name, false);
                 }
+                KeyCode::Char('d') if target.worktree_path.is_some() => {
+                    self.kill_session(&target.name, true);
+                }
                 _ => {
                     self.status_message = Some("Kill cancelled.".to_string());
                 }
@@ -271,19 +273,45 @@ impl SessionList {
     fn request_kill_selected(&mut self) {
         if let Some(session) = self.list.selected_item() {
             let name = session.tmux_session_name.clone();
-            let worktree_path = None;
-            self.status_message = Some(format!(
-                "Kill '{name}'? Press x/y to confirm, any other key to cancel."
-            ));
-            self.confirm_kill = Some(KillTarget { name, worktree_path });
+            let worktree_path = if is_worktree_session(session) {
+                Some(session.directory.clone())
+            } else {
+                None
+            };
+            self.status_message = Some(if worktree_path.is_some() {
+                format!("Kill '{name}'? x=kill only · d=kill+delete worktree · other=cancel")
+            } else {
+                format!("Kill '{name}'? Press x/y to confirm, any other key to cancel.")
+            });
+            self.confirm_kill = Some(KillTarget {
+                name,
+                worktree_path,
+            });
         }
     }
 
-    fn kill_session(&mut self, name: &str, _delete_worktree: bool) {
+    fn kill_session(&mut self, name: &str, delete_worktree: bool) {
         let _ = tmux::kill_session(name);
         if let Ok(path) = crate::session::default_db_path()
             && let Ok(mut db) = crate::session::SessionDb::open(&path)
         {
+            if delete_worktree
+                && let Some(record) = db.sessions.iter().find(|s| s.tmux_session_name == name)
+            {
+                let worktree_path = record.directory.clone();
+                db.sessions.retain(|s| s.tmux_session_name != name);
+                let _ = db.save();
+                if let Err(e) = std::fs::remove_dir_all(&worktree_path) {
+                    self.status_message = Some(format!(
+                        "Session deleted, but failed to remove worktree at '{worktree_path}': {e}"
+                    ));
+                    self.refresh();
+                    return;
+                }
+                self.status_message = Some(format!("Deleted session and worktree: {name}"));
+                self.refresh();
+                return;
+            }
             db.sessions.retain(|s| s.tmux_session_name != name);
             let _ = db.save();
         }
@@ -331,16 +359,34 @@ impl SessionList {
                 theme::ERROR
             };
             let msg_text = format!(" {msg} ");
-            let status_width = (msg_text.len() as u16).min(area.width);
-            let status_x = area.x + area.width.saturating_sub(status_width) / 2;
-            let status_y = area.y + area.height.saturating_sub(1);
-            let status_area = Rect::new(status_x, status_y, status_width, 1);
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
+            let width = area.width as usize;
+            // Wrap into lines of `width` chars, then render upward from bottom
+            let lines: Vec<Line> = if width == 0 {
+                vec![Line::from(Span::styled(
                     msg_text,
                     Style::default().fg(Color::White).bg(bg),
-                )))
-                .alignment(Alignment::Center),
+                ))]
+            } else {
+                msg_text
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(width)
+                    .map(|chunk| {
+                        let s: String = chunk.iter().collect();
+                        // pad to full width so bg fills the row
+                        let padded = format!("{s:<width$}");
+                        Line::from(Span::styled(
+                            padded,
+                            Style::default().fg(Color::White).bg(bg),
+                        ))
+                    })
+                    .collect()
+            };
+            let height = lines.len() as u16;
+            let status_y = area.y + area.height.saturating_sub(height);
+            let status_area = Rect::new(area.x, status_y, area.width, height);
+            frame.render_widget(
+                Paragraph::new(lines).alignment(Alignment::Center),
                 status_area,
             );
         }
@@ -849,7 +895,10 @@ mod tests {
         assert_eq!(action, SessionListAction::None);
         assert_eq!(
             list.confirm_kill,
-            Some(KillTarget { name: "alpha".to_string(), worktree_path: None })
+            Some(KillTarget {
+                name: "alpha".to_string(),
+                worktree_path: None
+            })
         );
         assert!(list.status_message.as_ref().unwrap().contains("confirm"));
     }
@@ -1090,5 +1139,73 @@ mod tests {
         // /proj/a contains 'j'? No. /proj/b contains 'j'? No. "proj" contains 'j' — yes! "/proj/a" and "/proj/b" both contain 'j'
         // so all 3 sessions remain; selection stays same
         assert_eq!(before, after);
+    }
+
+    fn worktree_session(name: &str, worktree_path: &str) -> SessionRecord {
+        SessionRecord {
+            tmux_session_id: "$99".to_string(),
+            tmux_session_name: name.to_string(),
+            claude_session_id: None,
+            directory: worktree_path.to_string(),
+            created_at: 9000,
+            state: SessionState::Idle,
+            claude_command: "claude".to_string(),
+            model_id: None,
+        }
+    }
+
+    #[test]
+    fn test_x_on_worktree_session_sets_worktree_path() {
+        let session = worktree_session("my-feat", "/repo/.claude/worktrees/my-feat");
+        let mut list = SessionList::new(vec![session]);
+        list.handle_key(key(KeyCode::Char('x')));
+        let target = list.confirm_kill.as_ref().unwrap();
+        assert_eq!(target.name, "my-feat");
+        assert_eq!(
+            target.worktree_path,
+            Some("/repo/.claude/worktrees/my-feat".to_string())
+        );
+        assert!(
+            list.status_message
+                .as_ref()
+                .unwrap()
+                .contains("kill+delete worktree")
+        );
+    }
+
+    #[test]
+    fn test_x_on_regular_session_no_worktree_path() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('x')));
+        let target = list.confirm_kill.as_ref().unwrap();
+        assert_eq!(target.worktree_path, None);
+        assert!(
+            list.status_message
+                .as_ref()
+                .unwrap()
+                .contains("x/y to confirm")
+        );
+    }
+
+    #[test]
+    fn test_d_ignored_for_non_worktree_session() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.handle_key(key(KeyCode::Char('x')));
+        // confirm_kill has no worktree_path — 'd' should cancel, not kill
+        list.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(list.confirm_kill, None);
+        assert_eq!(list.status_message.as_ref().unwrap(), "Kill cancelled.");
+    }
+
+    #[test]
+    fn test_is_worktree_session_true() {
+        let s = worktree_session("feat", "/repo/.claude/worktrees/feat");
+        assert!(is_worktree_session(&s));
+    }
+
+    #[test]
+    fn test_is_worktree_session_false() {
+        let s = worktree_session("feat", "/repo");
+        assert!(!is_worktree_session(&s));
     }
 }
