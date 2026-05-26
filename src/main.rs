@@ -501,7 +501,9 @@ fn launch_tmux_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app::InputField;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use tui_input::Input;
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent {
@@ -523,16 +525,9 @@ mod tests {
     #[test]
     fn test_submit_returns_action() {
         let mut app = App::new();
-        for ch in "test task".chars() {
-            app.handle_key(press(KeyCode::Char(ch)));
-        }
-        app.handle_key(press(KeyCode::Tab));
-        while !app.dir_input.value().is_empty() {
-            app.handle_key(press(KeyCode::Backspace));
-        }
-        for ch in "/tmp".chars() {
-            app.handle_key(press(KeyCode::Char(ch)));
-        }
+        app.dir_input = Input::new("/tmp".to_string());
+        app.title_input = Input::new("test task".to_string());
+        app.focused_field = InputField::Title;
         let action = app.handle_key(press(KeyCode::Enter));
         assert!(matches!(action, Action::Submit { .. }));
     }

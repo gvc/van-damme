@@ -482,7 +482,12 @@ impl SplashState {
             } else {
                 COL_BILLBOARD_TEXT
             };
-            self.billboards.push(Billboard { col, row, lines: ad, color });
+            self.billboards.push(Billboard {
+                col,
+                row,
+                lines: ad,
+                color,
+            });
         }
     }
 
@@ -675,11 +680,18 @@ impl SplashState {
             let char_idx = fastrand::usize(0..text_len);
             let glitch_ch = GLITCH_CHARS[fastrand::usize(0..GLITCH_CHARS.len())];
             let ng = self.neon_glitches.iter_mut().find(|ng| ng.sign_idx == i);
-            let glitch = GlitchChar { index: char_idx, ch: glitch_ch, ttl: fastrand::u8(2..6) };
+            let glitch = GlitchChar {
+                index: char_idx,
+                ch: glitch_ch,
+                ttl: fastrand::u8(2..6),
+            };
             if let Some(ng) = ng {
                 ng.glitches.push(glitch);
             } else {
-                self.neon_glitches.push(NeonGlitch { sign_idx: i, glitches: vec![glitch] });
+                self.neon_glitches.push(NeonGlitch {
+                    sign_idx: i,
+                    glitches: vec![glitch],
+                });
             }
         }
     }
@@ -882,9 +894,18 @@ impl SplashState {
                     }
                     let idx = row as usize * w + col as usize;
                     if grid[idx].kind == CellKind::Skyline {
-                        let fg = if ch == '│' || ch == '─' || ch == '┌' || ch == '┐'
-                            || ch == '└' || ch == '┘' || ch == '╔' || ch == '╗'
-                            || ch == '╚' || ch == '╝' || ch == '║' || ch == '═'
+                        let fg = if ch == '│'
+                            || ch == '─'
+                            || ch == '┌'
+                            || ch == '┐'
+                            || ch == '└'
+                            || ch == '┘'
+                            || ch == '╔'
+                            || ch == '╗'
+                            || ch == '╚'
+                            || ch == '╝'
+                            || ch == '║'
+                            || ch == '═'
                         {
                             COL_BILLBOARD_FRAME
                         } else {

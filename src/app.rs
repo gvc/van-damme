@@ -137,6 +137,7 @@ pub enum FormMode {
 pub enum GitMode {
     Worktree,
     Branch,
+    ExistingWorktree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -241,6 +242,7 @@ pub struct App {
     pub error_message: Option<String>,
     pub recent_dirs_dropdown: Dropdown,
     pub branch_dropdown: Dropdown,
+    pub worktree_dropdown: Dropdown,
 }
 
 impl App {
@@ -279,7 +281,7 @@ impl App {
         Self {
             running: true,
             form_mode,
-            focused_field: InputField::Title,
+            focused_field: InputField::Directory,
             title_input: Input::default(),
             dir_input: Input::new(default_dir),
             git_mode: GitMode::Worktree,
@@ -292,6 +294,7 @@ impl App {
             error_message: None,
             recent_dirs_dropdown,
             branch_dropdown: Dropdown::new(),
+            worktree_dropdown: Dropdown::new(),
         }
     }
 
@@ -308,7 +311,11 @@ impl App {
             return self.handle_branch_list_key(key);
         }
 
-        // Ctrl+G toggles git mode (Worktree/Branch) from any field
+        if self.worktree_dropdown.visible {
+            return self.handle_worktree_list_key(key);
+        }
+
+        // Ctrl+G cycles git mode (Worktree -> Branch -> ExistingWorktree -> Worktree) from any field
         if self.form_mode == FormMode::NewTask
             && key.code == KeyCode::Char('g')
             && key
@@ -317,10 +324,11 @@ impl App {
         {
             self.git_mode = match self.git_mode {
                 GitMode::Worktree => GitMode::Branch,
-                GitMode::Branch => GitMode::Worktree,
+                GitMode::Branch => GitMode::ExistingWorktree,
+                GitMode::ExistingWorktree => GitMode::Worktree,
             };
             // If switching away from Branch and BranchName is focused, move to Directory
-            if self.git_mode == GitMode::Worktree && self.focused_field == InputField::BranchName {
+            if self.git_mode != GitMode::Branch && self.focused_field == InputField::BranchName {
                 self.focused_field = InputField::Directory;
             }
             return Action::None;
@@ -436,6 +444,22 @@ impl App {
                     return Action::None;
                 }
 
+                // Ctrl+D opens existing worktree list when on title field in Worktree/ExistingWorktree mode
+                if self.focused_field == InputField::Title
+                    && key.code == KeyCode::Char('d')
+                    && key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                    && matches!(self.git_mode, GitMode::Worktree | GitMode::ExistingWorktree)
+                {
+                    let dir = self.dir_input.value().to_string();
+                    let worktrees = crate::git::list_worktrees(&dir);
+                    if !worktrees.is_empty() {
+                        self.worktree_dropdown.open(worktrees);
+                    }
+                    return Action::None;
+                }
+
                 // Forward to focused input
                 match self.focused_field {
                     InputField::Title => {
@@ -446,6 +470,8 @@ impl App {
                         self.dir_input
                             .handle_event(&crossterm::event::Event::Key(key));
                         self.update_dir_suggestion();
+                        // Clear title unconditionally when directory changes
+                        self.title_input = Input::default();
                     }
                     InputField::BranchName => {
                         self.branch_name_input
@@ -578,6 +604,54 @@ impl App {
         }
     }
 
+    fn handle_worktree_list_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => {
+                self.worktree_dropdown.close();
+                Action::None
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                self.worktree_dropdown.select_prev(Self::DROPDOWN_VISIBLE);
+                Action::None
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.worktree_dropdown.select_next(Self::DROPDOWN_VISIBLE);
+                Action::None
+            }
+            KeyCode::Enter => {
+                let selected = self
+                    .worktree_dropdown
+                    .selected_value()
+                    .map(|s| s.to_string());
+                if let Some(worktree) = selected {
+                    let len = worktree.len();
+                    self.title_input = Input::new(worktree);
+                    for _ in 0..len {
+                        self.title_input.handle_event(&crossterm::event::Event::Key(
+                            KeyEvent::new(KeyCode::Right, crossterm::event::KeyModifiers::NONE),
+                        ));
+                    }
+                    self.git_mode = GitMode::ExistingWorktree;
+                }
+                self.worktree_dropdown.close();
+                Action::None
+            }
+            KeyCode::Backspace => {
+                self.worktree_dropdown.pop_query_char();
+                Action::None
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.worktree_dropdown.push_query_char(c);
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
     fn cursor_at_end(&self) -> bool {
         self.dir_input.visual_cursor() >= self.dir_input.value().len()
     }
@@ -641,14 +715,14 @@ impl App {
     fn next_field(&mut self) {
         if self.form_mode == FormMode::NewTmuxSession {
             self.focused_field = match self.focused_field {
-                InputField::Title => InputField::Directory,
-                _ => InputField::Title,
+                InputField::Directory => InputField::Title,
+                _ => InputField::Directory,
             };
             return;
         }
         self.focused_field = match self.focused_field {
-            InputField::Title => InputField::Directory,
-            InputField::Directory => {
+            InputField::Directory => InputField::Title,
+            InputField::Title => {
                 if self.git_mode == GitMode::Branch {
                     InputField::BranchName
                 } else {
@@ -658,27 +732,27 @@ impl App {
             InputField::BranchName => InputField::Prompt,
             InputField::Prompt => InputField::ClaudeCommand,
             InputField::ClaudeCommand => InputField::ModelSelection,
-            InputField::ModelSelection => InputField::Title,
+            InputField::ModelSelection => InputField::Directory,
         };
     }
 
     fn prev_field(&mut self) {
         if self.form_mode == FormMode::NewTmuxSession {
             self.focused_field = match self.focused_field {
-                InputField::Directory => InputField::Title,
-                _ => InputField::Directory,
+                InputField::Title => InputField::Directory,
+                _ => InputField::Title,
             };
             return;
         }
         self.focused_field = match self.focused_field {
-            InputField::Title => InputField::ModelSelection,
-            InputField::Directory => InputField::Title,
-            InputField::BranchName => InputField::Directory,
+            InputField::Directory => InputField::ModelSelection,
+            InputField::Title => InputField::Directory,
+            InputField::BranchName => InputField::Title,
             InputField::Prompt => {
                 if self.git_mode == GitMode::Branch {
                     InputField::BranchName
                 } else {
-                    InputField::Directory
+                    InputField::Title
                 }
             }
             InputField::ClaudeCommand => InputField::Prompt,
@@ -690,14 +764,15 @@ impl App {
         let title = self.title_input.value().trim().to_string();
         let directory = self.dir_input.value().trim().to_string();
 
-        if title.is_empty() {
-            self.error_message = Some("Title cannot be empty".to_string());
-            self.focused_field = InputField::Title;
+        if directory.is_empty() {
+            self.error_message = Some("Directory cannot be empty".to_string());
+            self.focused_field = InputField::Directory;
             return Action::None;
         }
 
-        if directory.is_empty() {
-            self.error_message = Some("Directory cannot be empty".to_string());
+        if title.is_empty() {
+            self.error_message = Some("Title cannot be empty".to_string());
+            self.focused_field = InputField::Title;
             return Action::None;
         }
 
@@ -729,6 +804,21 @@ impl App {
         } else {
             None
         };
+
+        // ExistingWorktree: verify worktree directory exists
+        if self.git_mode == GitMode::ExistingWorktree {
+            let worktree_path = std::path::Path::new(&directory)
+                .join(".claude")
+                .join("worktrees")
+                .join(&title);
+            if !worktree_path.is_dir() {
+                self.error_message = Some(format!(
+                    "Worktree '{title}' not found in {directory}/.claude/worktrees/"
+                ));
+                self.focused_field = InputField::Title;
+                return Action::None;
+            }
+        }
 
         let prompt_raw = self.prompt_input.value().trim().to_string();
         let prompt = if prompt_raw.is_empty() {
@@ -828,6 +918,7 @@ impl App {
                     match self.git_mode {
                         GitMode::Worktree => " [git: worktree] ",
                         GitMode::Branch => " [git: branch] ",
+                        GitMode::ExistingWorktree => " [git: existing worktree] ",
                     },
                     Style::default().fg(theme::CYAN),
                 ))
@@ -841,10 +932,10 @@ impl App {
 
         // Build layout constraints
         let mut constraints = vec![
-            Constraint::Length(1), // Title label
-            Constraint::Length(3), // Title input
             Constraint::Length(1), // Directory label
             Constraint::Length(3), // Directory input
+            Constraint::Length(1), // Title label
+            Constraint::Length(3), // Title input
         ];
         if self.git_mode == GitMode::Branch {
             constraints.push(Constraint::Length(1)); // Branch name label
@@ -860,11 +951,11 @@ impl App {
         ]);
         let chunks = Layout::vertical(constraints).split(inner);
 
-        // Track chunk indices
-        let title_label_idx = 0;
-        let title_input_idx = 1;
-        let dir_label_idx = 2;
-        let dir_input_idx = 3;
+        // Track chunk indices (order: Directory, Title, [Branch], Prompt, Cmd, Model, Hints)
+        let dir_label_idx = 0;
+        let dir_input_idx = 1;
+        let title_label_idx = 2;
+        let title_input_idx = 3;
         let mut next_idx = 4;
 
         let branch_label_idx;
@@ -890,27 +981,6 @@ impl App {
         let model_selector_idx = next_idx;
         next_idx += 1;
         let hints_idx = next_idx;
-
-        // Title label
-        let title_label =
-            Paragraph::new("Title:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
-        frame.render_widget(title_label, chunks[title_label_idx]);
-
-        // Title input
-        let title_border_color = if self.focused_field == InputField::Title {
-            theme::ORANGE_BRIGHT
-        } else {
-            theme::GRAY
-        };
-        let title_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(title_border_color))
-            .style(Style::default().bg(theme::BG));
-        let title_inner = title_block.inner(chunks[title_input_idx]);
-        let title_para = Paragraph::new(self.title_input.value())
-            .style(Style::default().fg(theme::TEXT))
-            .block(title_block);
-        frame.render_widget(title_para, chunks[title_input_idx]);
 
         // Directory label
         let dir_label =
@@ -942,6 +1012,27 @@ impl App {
         };
         let dir_para = Paragraph::new(dir_line).block(dir_block);
         frame.render_widget(dir_para, chunks[dir_input_idx]);
+
+        // Title label
+        let title_label =
+            Paragraph::new("Title:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
+        frame.render_widget(title_label, chunks[title_label_idx]);
+
+        // Title input
+        let title_border_color = if self.focused_field == InputField::Title {
+            theme::ORANGE_BRIGHT
+        } else {
+            theme::GRAY
+        };
+        let title_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(title_border_color))
+            .style(Style::default().bg(theme::BG));
+        let title_inner = title_block.inner(chunks[title_input_idx]);
+        let title_para = Paragraph::new(self.title_input.value())
+            .style(Style::default().fg(theme::TEXT))
+            .block(title_block);
+        frame.render_widget(title_para, chunks[title_input_idx]);
 
         // Branch name (only when Branch mode)
         let mut branch_inner = None;
@@ -1066,7 +1157,10 @@ impl App {
         frame.render_widget(selector_para, chunks[model_selector_idx]);
 
         // Hints
-        let hint_text = if self.recent_dirs_dropdown.visible || self.branch_dropdown.visible {
+        let hint_text = if self.recent_dirs_dropdown.visible
+            || self.branch_dropdown.visible
+            || self.worktree_dropdown.visible
+        {
             "type to filter  |  ↑/↓: select  |  Enter: confirm  |  Esc: cancel"
         } else if self.focused_field == InputField::ModelSelection {
             "←/→: cycle model  |  Tab: next  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
@@ -1084,6 +1178,10 @@ impl App {
             "Tab/→: complete  |  Ctrl+D: branches  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         } else if self.focused_field == InputField::BranchName {
             "Ctrl+D: branches  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
+        } else if self.focused_field == InputField::Title
+            && matches!(self.git_mode, GitMode::Worktree | GitMode::ExistingWorktree)
+        {
+            "Ctrl+D: existing worktrees  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         } else {
             "Tab: next  |  Ctrl+G: toggle git  |  Ctrl+T: switch mode  |  Enter: submit  |  Esc: quit"
         };
@@ -1194,6 +1292,57 @@ impl App {
                     " > {}  ({}/{}) ",
                     self.branch_dropdown.query,
                     self.branch_dropdown.selected.map_or(0, |i| i + 1),
+                    filtered.len()
+                )
+            };
+            let dropdown = ratatui::widgets::List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::ORANGE))
+                    .title(title)
+                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+                    .style(Style::default().bg(theme::BG)),
+            );
+            frame.render_widget(dropdown, dropdown_area);
+        }
+
+        // Worktree list dropdown (anchored below title input)
+        if self.worktree_dropdown.visible && !self.worktree_dropdown.items.is_empty() {
+            let filtered = self.worktree_dropdown.filtered();
+            let visible = filtered.len().min(Self::DROPDOWN_VISIBLE);
+            let dropdown_height = visible as u16 + 2;
+            let dropdown_area = ratatui::layout::Rect {
+                x: chunks[title_input_idx].x,
+                y: chunks[title_input_idx].y + chunks[title_input_idx].height,
+                width: chunks[title_input_idx].width,
+                height: dropdown_height,
+            };
+            frame.render_widget(Clear, dropdown_area);
+            let items: Vec<ratatui::widgets::ListItem> = filtered
+                .iter()
+                .enumerate()
+                .skip(self.worktree_dropdown.scroll)
+                .take(visible)
+                .map(|(i, w)| {
+                    let style = if Some(i) == self.worktree_dropdown.selected {
+                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
+                    } else {
+                        Style::default().fg(theme::GRAY_DIM)
+                    };
+                    ratatui::widgets::ListItem::new(Line::from(Span::styled(*w, style)))
+                })
+                .collect();
+            let title = if self.worktree_dropdown.query.is_empty() {
+                format!(
+                    " Existing Worktrees ({}/{}) ",
+                    self.worktree_dropdown.selected.map_or(0, |i| i + 1),
+                    filtered.len()
+                )
+            } else {
+                format!(
+                    " > {}  ({}/{}) ",
+                    self.worktree_dropdown.query,
+                    self.worktree_dropdown.selected.map_or(0, |i| i + 1),
                     filtered.len()
                 )
             };
@@ -1450,7 +1599,7 @@ mod tests {
     fn test_new_app_is_running() {
         let app = App::new();
         assert!(app.running);
-        assert_eq!(app.focused_field, InputField::Title);
+        assert_eq!(app.focused_field, InputField::Directory);
     }
 
     #[test]
@@ -1465,10 +1614,10 @@ mod tests {
     fn test_tab_cycles_all_fields_worktree_mode() {
         let mut app = App::new();
         assert_eq!(app.git_mode, GitMode::Worktree);
-        assert_eq!(app.focused_field, InputField::Title);
+        assert_eq!(app.focused_field, InputField::Directory);
 
         app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.focused_field, InputField::Directory);
+        assert_eq!(app.focused_field, InputField::Title);
 
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::Prompt);
@@ -1480,17 +1629,17 @@ mod tests {
         assert_eq!(app.focused_field, InputField::ModelSelection);
 
         app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.focused_field, InputField::Title);
+        assert_eq!(app.focused_field, InputField::Directory);
     }
 
     #[test]
     fn test_tab_cycles_all_fields_branch_mode() {
         let mut app = App::new();
         app.git_mode = GitMode::Branch;
-        assert_eq!(app.focused_field, InputField::Title);
+        assert_eq!(app.focused_field, InputField::Directory);
 
         app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.focused_field, InputField::Directory);
+        assert_eq!(app.focused_field, InputField::Title);
 
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::BranchName);
@@ -1505,7 +1654,7 @@ mod tests {
         assert_eq!(app.focused_field, InputField::ModelSelection);
 
         app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.focused_field, InputField::Title);
+        assert_eq!(app.focused_field, InputField::Directory);
     }
 
     #[test]
@@ -1520,7 +1669,9 @@ mod tests {
     #[test]
     fn test_enter_on_title_submits_directly() {
         let mut app = App::new();
-        // Default dir_input is CWD which should exist
+        // Navigate to Title field (starts on Directory now)
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Title);
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
@@ -1531,15 +1682,10 @@ mod tests {
     #[test]
     fn test_submit_with_custom_directory() {
         let mut app = App::new();
+        // Set directory directly to avoid Tab autocomplete interference
+        app.dir_input = Input::new("/tmp".to_string());
+        app.focused_field = InputField::Title;
         for ch in "my task".chars() {
-            app.handle_key(key(KeyCode::Char(ch)));
-        }
-        // Move to directory and change it
-        app.handle_key(key(KeyCode::Tab));
-        while !app.dir_input.value().is_empty() {
-            app.handle_key(key(KeyCode::Backspace));
-        }
-        for ch in "/tmp".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
         let action = app.handle_key(key(KeyCode::Enter));
@@ -1568,14 +1714,16 @@ mod tests {
         let nested_str = nested_path.to_string_lossy().to_string();
 
         let mut app = App::new();
-        for ch in "my task".chars() {
-            app.handle_key(key(KeyCode::Char(ch)));
-        }
-        app.handle_key(key(KeyCode::Tab));
+        // Starts on Directory
         while !app.dir_input.value().is_empty() {
             app.handle_key(key(KeyCode::Backspace));
         }
         for ch in nested_str.chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        // Tab to Title
+        app.handle_key(key(KeyCode::Tab));
+        for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
 
@@ -1602,9 +1750,10 @@ mod tests {
     fn test_up_down_cycles_all_fields() {
         let mut app = App::new();
         assert_eq!(app.git_mode, GitMode::Worktree);
+        assert_eq!(app.focused_field, InputField::Directory);
 
         app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.focused_field, InputField::Directory);
+        assert_eq!(app.focused_field, InputField::Title);
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.focused_field, InputField::Prompt);
         app.handle_key(key(KeyCode::Down));
@@ -1612,7 +1761,7 @@ mod tests {
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.focused_field, InputField::ModelSelection);
         app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.focused_field, InputField::Title);
+        assert_eq!(app.focused_field, InputField::Directory);
 
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.focused_field, InputField::ModelSelection);
@@ -1621,19 +1770,19 @@ mod tests {
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.focused_field, InputField::Prompt);
         app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.focused_field, InputField::Directory);
-        app.handle_key(key(KeyCode::Up));
         assert_eq!(app.focused_field, InputField::Title);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.focused_field, InputField::Directory);
     }
 
     #[test]
     fn test_submit_with_prompt() {
         let mut app = App::new();
+        // Starts on Directory
+        app.handle_key(key(KeyCode::Tab)); // -> Title
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
-        // Skip to prompt field
-        app.handle_key(key(KeyCode::Tab)); // -> Directory
         app.handle_key(key(KeyCode::Tab)); // -> Prompt
         for ch in "fix the bug".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
@@ -1659,6 +1808,7 @@ mod tests {
     #[test]
     fn test_submit_with_no_prompt_is_none() {
         let mut app = App::new();
+        app.handle_key(key(KeyCode::Tab)); // -> Title
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
@@ -1672,6 +1822,7 @@ mod tests {
     #[test]
     fn test_submit_with_empty_prompt_is_none() {
         let mut app = App::new();
+        app.handle_key(key(KeyCode::Tab)); // -> Title
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
@@ -1791,7 +1942,7 @@ mod tests {
         app.update_dir_suggestion();
         // Even if suggestion exists, Tab at trailing '/' must go to next field
         app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.focused_field, InputField::Prompt);
+        assert_eq!(app.focused_field, InputField::Title);
     }
 
     #[test]
@@ -1811,24 +1962,24 @@ mod tests {
         app.dir_suggestion = Some("ghost".to_string());
         app.handle_key(key(KeyCode::Tab));
         // complete_path returns None → complete_directory returns false → next_field called
-        assert_eq!(app.focused_field, InputField::Prompt);
+        assert_eq!(app.focused_field, InputField::Title);
     }
 
     #[test]
-    fn test_tab_on_directory_moves_to_prompt_in_worktree_mode() {
+    fn test_tab_on_directory_moves_to_title_in_worktree_mode() {
         let mut app = App::new();
         app.focused_field = InputField::Directory;
         app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.focused_field, InputField::Prompt);
+        assert_eq!(app.focused_field, InputField::Title);
     }
 
     #[test]
-    fn test_tab_on_directory_moves_to_branch_name_in_branch_mode() {
+    fn test_tab_on_directory_moves_to_title_in_branch_mode() {
         let mut app = App::new();
         app.git_mode = GitMode::Branch;
         app.focused_field = InputField::Directory;
         app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.focused_field, InputField::BranchName);
+        assert_eq!(app.focused_field, InputField::Title);
     }
 
     #[test]
@@ -1880,7 +2031,7 @@ mod tests {
     fn test_ctrl_d_noop_on_other_fields() {
         let dirs = vec!["/tmp".to_string()];
         let mut app = App::with_recent_dirs(dirs);
-        app.focused_field = InputField::Title;
+        app.focused_field = InputField::Prompt;
         app.handle_key(ctrl_d());
         assert!(!app.recent_dirs_dropdown.visible);
     }
@@ -2140,6 +2291,8 @@ mod tests {
         app.handle_key(ctrl_g());
         assert_eq!(app.git_mode, GitMode::Branch);
         app.handle_key(ctrl_g());
+        assert_eq!(app.git_mode, GitMode::ExistingWorktree);
+        app.handle_key(ctrl_g());
         assert_eq!(app.git_mode, GitMode::Worktree);
     }
 
@@ -2148,8 +2301,8 @@ mod tests {
         let mut app = App::new();
         app.git_mode = GitMode::Branch;
         app.focused_field = InputField::BranchName;
-        app.handle_key(ctrl_g()); // switch to Worktree
-        assert_eq!(app.git_mode, GitMode::Worktree);
+        app.handle_key(ctrl_g()); // switch to ExistingWorktree
+        assert_eq!(app.git_mode, GitMode::ExistingWorktree);
         assert_eq!(app.focused_field, InputField::Directory);
     }
 
@@ -2158,6 +2311,8 @@ mod tests {
         let mut app = App::new();
         app.git_mode = GitMode::Branch;
         app.focused_field = InputField::Directory;
+        app.handle_key(key(KeyCode::Tab)); // -> Title
+        assert_eq!(app.focused_field, InputField::Title);
         app.handle_key(key(KeyCode::Tab)); // -> BranchName
         assert_eq!(app.focused_field, InputField::BranchName);
         app.handle_key(key(KeyCode::Tab)); // -> Prompt
@@ -2168,7 +2323,7 @@ mod tests {
     fn test_worktree_mode_skips_branch_name_field() {
         let mut app = App::new();
         assert_eq!(app.git_mode, GitMode::Worktree);
-        app.focused_field = InputField::Directory;
+        app.focused_field = InputField::Title;
         app.handle_key(key(KeyCode::Tab)); // Should skip BranchName, go to Prompt
         assert_eq!(app.focused_field, InputField::Prompt);
     }
@@ -2177,10 +2332,11 @@ mod tests {
     fn test_branch_mode_submit_includes_branch_name() {
         let mut app = App::new();
         app.git_mode = GitMode::Branch;
+        // Starts on Directory
+        app.handle_key(key(KeyCode::Tab)); // -> Title
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
-        app.handle_key(key(KeyCode::Tab)); // -> Directory
         app.handle_key(key(KeyCode::Tab)); // -> BranchName
         for ch in "feature/my-branch".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
@@ -2203,6 +2359,8 @@ mod tests {
     fn test_branch_mode_empty_branch_name_shows_error() {
         let mut app = App::new();
         app.git_mode = GitMode::Branch;
+        // Starts on Directory, Tab to Title, type title
+        app.handle_key(key(KeyCode::Tab)); // -> Title
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
@@ -2222,12 +2380,12 @@ mod tests {
     }
 
     #[test]
-    fn test_prev_field_from_prompt_goes_to_directory_in_worktree_mode() {
+    fn test_prev_field_from_prompt_goes_to_title_in_worktree_mode() {
         let mut app = App::new();
         assert_eq!(app.git_mode, GitMode::Worktree);
         app.focused_field = InputField::Prompt;
         app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.focused_field, InputField::Directory);
+        assert_eq!(app.focused_field, InputField::Title);
     }
 
     // --- NewTmuxSession mode tests ---
@@ -2245,34 +2403,30 @@ mod tests {
     #[test]
     fn test_tmux_mode_tab_cycles_title_directory_only() {
         let mut app = tmux_app();
-        assert_eq!(app.focused_field, InputField::Title);
-        app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::Directory);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::Title);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_field, InputField::Directory);
     }
 
     #[test]
     fn test_tmux_mode_prev_field_cycles_directory_title_only() {
         let mut app = tmux_app();
-        assert_eq!(app.focused_field, InputField::Title);
-        app.handle_key(key(KeyCode::BackTab));
         assert_eq!(app.focused_field, InputField::Directory);
         app.handle_key(key(KeyCode::BackTab));
         assert_eq!(app.focused_field, InputField::Title);
+        app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(app.focused_field, InputField::Directory);
     }
 
     #[test]
     fn test_tmux_mode_enter_submits_tmux_session() {
         let mut app = tmux_app();
+        // Set directory directly, go to Title
+        app.dir_input = Input::new("/tmp".to_string());
+        app.focused_field = InputField::Title;
         for ch in "my-session".chars() {
-            app.handle_key(key(KeyCode::Char(ch)));
-        }
-        app.handle_key(key(KeyCode::Tab));
-        while !app.dir_input.value().is_empty() {
-            app.handle_key(key(KeyCode::Backspace));
-        }
-        for ch in "/tmp".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
         let action = app.handle_key(key(KeyCode::Enter));
@@ -2310,14 +2464,15 @@ mod tests {
     #[test]
     fn test_ctrl_t_preserves_title_and_directory() {
         let mut app = App::new();
-        for ch in "my task".chars() {
-            app.handle_key(key(KeyCode::Char(ch)));
-        }
-        app.handle_key(key(KeyCode::Tab));
+        // Starts on Directory
         while !app.dir_input.value().is_empty() {
             app.handle_key(key(KeyCode::Backspace));
         }
         for ch in "/home/user".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab)); // -> Title
+        for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
         app.handle_key(ctrl_t());
@@ -2340,10 +2495,10 @@ mod tests {
     #[test]
     fn test_ctrl_t_preserves_title_field_when_switching() {
         let mut app = App::new();
-        // Title field is valid in both modes — should stay
-        assert_eq!(app.focused_field, InputField::Title);
+        // Directory field is valid in both modes — should stay
+        assert_eq!(app.focused_field, InputField::Directory);
         app.handle_key(ctrl_t());
-        assert_eq!(app.focused_field, InputField::Title);
+        assert_eq!(app.focused_field, InputField::Directory);
     }
 
     // --- ModelSelection tests ---
@@ -2464,6 +2619,7 @@ mod tests {
     fn test_submit_carries_model_selection() {
         let mut app = App::new();
         app.model_selection = ModelSelection::Sonnet46;
+        app.handle_key(key(KeyCode::Tab)); // -> Title
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
@@ -2485,15 +2641,15 @@ mod tests {
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_field, InputField::ModelSelection);
         app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.focused_field, InputField::Title);
+        assert_eq!(app.focused_field, InputField::Directory);
     }
 
     #[test]
-    fn test_prev_field_from_title_goes_to_model_selection() {
+    fn test_prev_field_from_title_goes_to_directory() {
         let mut app = App::new();
         app.focused_field = InputField::Title;
         app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.focused_field, InputField::ModelSelection);
+        assert_eq!(app.focused_field, InputField::Directory);
     }
 
     fn init_test_repo_with_branches(dir: &std::path::Path, branches: &[&str]) {
@@ -2771,5 +2927,89 @@ mod tests {
         app.handle_key(key(KeyCode::Esc));
         assert!(!app.branch_dropdown.visible);
         assert_eq!(app.branch_name_input.value(), "");
+    }
+
+    // ── Worktree dropdown tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_ctrl_d_on_title_opens_worktree_dropdown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktrees_dir = tmp.path().join(".claude").join("worktrees");
+        std::fs::create_dir_all(worktrees_dir.join("feat+my-feature")).unwrap();
+        std::fs::create_dir_all(worktrees_dir.join("fix-the-bug")).unwrap();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Worktree;
+        app.focused_field = InputField::Title;
+        app.dir_input = Input::new(tmp.path().to_str().unwrap().to_string());
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+
+        assert!(app.worktree_dropdown.visible);
+        assert_eq!(app.worktree_dropdown.items.len(), 2);
+    }
+
+    #[test]
+    fn test_ctrl_d_on_title_noop_when_no_worktrees() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Worktree;
+        app.focused_field = InputField::Title;
+        app.dir_input = Input::new(tmp.path().to_str().unwrap().to_string());
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+
+        assert!(!app.worktree_dropdown.visible);
+    }
+
+    #[test]
+    fn test_worktree_dropdown_enter_fills_title_and_sets_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktrees_dir = tmp.path().join(".claude").join("worktrees");
+        std::fs::create_dir_all(worktrees_dir.join("feat+my-feature")).unwrap();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Worktree;
+        app.focused_field = InputField::Title;
+        app.dir_input = Input::new(tmp.path().to_str().unwrap().to_string());
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+        assert!(app.worktree_dropdown.visible);
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(!app.worktree_dropdown.visible);
+        assert_eq!(app.title_input.value(), "feat+my-feature");
+        assert_eq!(app.git_mode, GitMode::ExistingWorktree);
+    }
+
+    #[test]
+    fn test_worktree_dropdown_esc_closes_without_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktrees_dir = tmp.path().join(".claude").join("worktrees");
+        std::fs::create_dir_all(worktrees_dir.join("feat+my-feature")).unwrap();
+
+        let mut app = App::new();
+        app.git_mode = GitMode::Worktree;
+        app.focused_field = InputField::Title;
+        app.dir_input = Input::new(tmp.path().to_str().unwrap().to_string());
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(!app.worktree_dropdown.visible);
+        assert_eq!(app.title_input.value(), "");
+    }
+
+    #[test]
+    fn test_directory_change_clears_title() {
+        let mut app = App::new();
+        app.title_input = Input::new("my-feature".to_string());
+        app.focused_field = InputField::Directory;
+
+        app.handle_key(key(KeyCode::Char('x')));
+
+        assert_eq!(app.title_input.value(), "");
     }
 }
