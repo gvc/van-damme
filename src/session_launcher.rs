@@ -186,6 +186,19 @@ impl<'a> SessionLauncher<'a> {
 
         // Step 1: git prep
         let use_worktree = git_mode == GitMode::Worktree;
+        let effective_directory = if git_mode == GitMode::ExistingWorktree {
+            // Launch Claude directly inside the existing worktree directory
+            let worktree_path = std::path::Path::new(directory)
+                .join(".claude")
+                .join("worktrees")
+                .join(title);
+            worktree_path
+                .to_str()
+                .ok_or_else(|| color_eyre::eyre::eyre!("Worktree path contains invalid UTF-8"))?
+                .to_string()
+        } else {
+            directory.to_string()
+        };
         let git_undo = match git_mode {
             GitMode::Worktree => self.git.prepare_worktree(directory, on_step)?,
             GitMode::Branch => {
@@ -198,10 +211,11 @@ impl<'a> SessionLauncher<'a> {
                     GitUndo::Nothing
                 }
             }
+            GitMode::ExistingWorktree => GitUndo::Nothing,
         };
 
         let dir = {
-            let t = directory.trim_end_matches('/');
+            let t = effective_directory.trim_end_matches('/');
             if t.is_empty() {
                 "/".to_string()
             } else {
@@ -219,7 +233,7 @@ impl<'a> SessionLauncher<'a> {
             tmux_session_id: String::new(),
             tmux_session_name: session_name.clone(),
             claude_session_id: Some(claude_session_id.to_string()),
-            directory: dir,
+            directory: dir.clone(),
             created_at,
             state: SessionState::Idle,
             claude_command: claude_command.to_string(),
@@ -236,7 +250,7 @@ impl<'a> SessionLauncher<'a> {
         // Step 3: tmux create
         let tmux_session = match self.tmux.create_session(
             &session_name,
-            directory,
+            &dir,
             prompt,
             None,
             claude_session_id,
@@ -280,6 +294,7 @@ mod tests {
     struct FakeGit {
         prepare_result: Result<GitUndo>,
         undo_calls: RefCell<Vec<String>>,
+        worktree_calls: RefCell<u32>,
     }
 
     impl FakeGit {
@@ -287,27 +302,34 @@ mod tests {
             Self {
                 prepare_result: Ok(GitUndo::Nothing),
                 undo_calls: RefCell::new(vec![]),
+                worktree_calls: RefCell::new(0),
             }
         }
         fn failing() -> Self {
             Self {
                 prepare_result: Err(color_eyre::eyre::eyre!("git failed")),
                 undo_calls: RefCell::new(vec![]),
+                worktree_calls: RefCell::new(0),
             }
         }
         fn with_undo(original: &str) -> Self {
             Self {
                 prepare_result: Ok(GitUndo::CheckoutBranch(original.to_string())),
                 undo_calls: RefCell::new(vec![]),
+                worktree_calls: RefCell::new(0),
             }
         }
         fn undo_called(&self) -> bool {
             !self.undo_calls.borrow().is_empty()
         }
+        fn prepare_worktree_called(&self) -> bool {
+            *self.worktree_calls.borrow() > 0
+        }
     }
 
     impl GitAdapter for FakeGit {
         fn prepare_worktree(&self, _dir: &str, _on_step: &dyn Fn(&str)) -> Result<GitUndo> {
+            *self.worktree_calls.borrow_mut() += 1;
             match &self.prepare_result {
                 Ok(_) => Ok(GitUndo::Nothing),
                 Err(_) => Err(color_eyre::eyre::eyre!("git failed")),
@@ -498,5 +520,36 @@ mod tests {
         let err = launch(&git, &tmux, &mut db).unwrap_err();
         assert!(err.to_string().contains("already exists"));
         assert!(db.sessions.is_empty());
+    }
+
+    #[test]
+    fn existing_worktree_skips_git_prep_and_uses_worktree_path() {
+        let git = FakeGit::ok();
+        let tmux = FakeTmux::ok();
+        let mut db = FakeDb::ok();
+
+        SessionLauncher::new(&git, &tmux, &mut db)
+            .launch(
+                "my-feature",
+                "/repo",
+                GitMode::ExistingWorktree,
+                None,
+                None,
+                "claude",
+                ModelSelection::Default,
+                "uuid-2",
+                &|_| {},
+            )
+            .unwrap();
+
+        assert!(
+            !git.prepare_worktree_called(),
+            "prepare_worktree must not be called for ExistingWorktree"
+        );
+        assert_eq!(db.sessions.len(), 1);
+        assert_eq!(
+            db.sessions[0].directory,
+            "/repo/.claude/worktrees/my-feature"
+        );
     }
 }

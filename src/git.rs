@@ -177,6 +177,22 @@ fn has_uncommitted_changes(directory: &str) -> Result<bool> {
     Ok(!output.stdout.is_empty())
 }
 
+/// Return names of existing worktrees under `<directory>/.claude/worktrees/`.
+/// Returns subdirectory names only (not full paths). Returns empty vec if none exist.
+pub fn list_worktrees(directory: &str) -> Vec<String> {
+    let worktrees_path = std::path::Path::new(directory)
+        .join(".claude")
+        .join("worktrees");
+    match std::fs::read_dir(&worktrees_path) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Return all local branch names in `directory`. Returns empty vec on error.
 pub fn get_local_branches(directory: &str) -> Vec<String> {
     let output = Command::new("git")
@@ -605,5 +621,36 @@ mod tests {
 
         // After prepare_worktree, the upstream commit should be pulled
         assert!(tmp.path().join("upstream.txt").exists());
+    }
+
+    #[test]
+    fn test_list_worktrees_empty_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = list_worktrees(tmp.path().to_str().unwrap());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_list_worktrees_returns_subdirectory_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktrees_dir = tmp.path().join(".claude").join("worktrees");
+        std::fs::create_dir_all(worktrees_dir.join("feat+my-feature")).unwrap();
+        std::fs::create_dir_all(worktrees_dir.join("fix-the-bug")).unwrap();
+
+        let mut result = list_worktrees(tmp.path().to_str().unwrap());
+        result.sort();
+        assert_eq!(result, vec!["feat+my-feature", "fix-the-bug"]);
+    }
+
+    #[test]
+    fn test_list_worktrees_ignores_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktrees_dir = tmp.path().join(".claude").join("worktrees");
+        std::fs::create_dir_all(&worktrees_dir).unwrap();
+        std::fs::write(worktrees_dir.join("not-a-dir.txt"), "content").unwrap();
+        std::fs::create_dir_all(worktrees_dir.join("real-worktree")).unwrap();
+
+        let result = list_worktrees(tmp.path().to_str().unwrap());
+        assert_eq!(result, vec!["real-worktree"]);
     }
 }
