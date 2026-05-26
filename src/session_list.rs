@@ -1,3 +1,6 @@
+use std::sync::mpsc;
+use std::thread;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
@@ -37,6 +40,13 @@ struct KillTarget {
 }
 
 #[derive(Debug)]
+struct PendingWorktreeDelete {
+    session_name: String,
+    worktree_path: String,
+    rx: mpsc::Receiver<Result<(), String>>,
+}
+
+#[derive(Debug)]
 pub struct SessionList {
     list: GroupedList<SessionRecord>,
     all_sessions: Vec<SessionRecord>,
@@ -49,6 +59,7 @@ pub struct SessionList {
     preview_summary: Option<tmux::SessionSummary>,
     splash: SplashState,
     last_activity: std::time::Instant,
+    pending_worktree_deletes: Vec<PendingWorktreeDelete>,
 }
 
 impl SessionList {
@@ -65,6 +76,7 @@ impl SessionList {
             preview_summary: None,
             splash: SplashState::new(),
             last_activity: std::time::Instant::now(),
+            pending_worktree_deletes: Vec::new(),
         }
     }
 
@@ -301,14 +313,10 @@ impl SessionList {
                 let worktree_path = record.directory.clone();
                 db.sessions.retain(|s| s.tmux_session_name != name);
                 let _ = db.save();
-                if let Err(e) = std::fs::remove_dir_all(&worktree_path) {
-                    self.status_message = Some(format!(
-                        "Session deleted, but failed to remove worktree at '{worktree_path}': {e}"
-                    ));
-                    self.refresh();
-                    return;
-                }
-                self.status_message = Some(format!("Deleted session and worktree: {name}"));
+                self.spawn_worktree_delete(name.to_string(), worktree_path.clone());
+                self.status_message = Some(format!(
+                    "Killed '{name}'. Deleting worktree in background: {worktree_path}"
+                ));
                 self.refresh();
                 return;
             }
@@ -317,6 +325,53 @@ impl SessionList {
         }
         self.status_message = Some(format!("Deleted session: {name}"));
         self.refresh();
+    }
+
+    fn spawn_worktree_delete(&mut self, session_name: String, worktree_path: String) {
+        let (tx, rx) = mpsc::channel();
+        let path = worktree_path.clone();
+        thread::spawn(move || {
+            let result = std::fs::remove_dir_all(&path).map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+        self.pending_worktree_deletes.push(PendingWorktreeDelete {
+            session_name,
+            worktree_path,
+            rx,
+        });
+    }
+
+    /// Poll pending background worktree deletions. Surfaces the first
+    /// completed result to `status_message` and removes finished entries.
+    /// Called on each tick.
+    pub fn poll_worktree_deletes(&mut self) {
+        let mut completed: Vec<(String, String, Result<(), String>)> = Vec::new();
+        self.pending_worktree_deletes
+            .retain(|pending| match pending.rx.try_recv() {
+                Ok(result) => {
+                    completed.push((
+                        pending.session_name.clone(),
+                        pending.worktree_path.clone(),
+                        result,
+                    ));
+                    false
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    completed.push((
+                        pending.session_name.clone(),
+                        pending.worktree_path.clone(),
+                        Err("worktree delete thread exited unexpectedly".to_string()),
+                    ));
+                    false
+                }
+                Err(mpsc::TryRecvError::Empty) => true,
+            });
+        for (name, path, result) in completed {
+            self.status_message = Some(match result {
+                Ok(()) => format!("Deleted worktree for '{name}': {path}"),
+                Err(e) => format!("Failed to remove worktree at '{path}': {e}"),
+            });
+        }
     }
 
     pub fn refresh_preview(&mut self) {
@@ -1207,5 +1262,73 @@ mod tests {
     fn test_is_worktree_session_false() {
         let s = worktree_session("feat", "/repo");
         assert!(!is_worktree_session(&s));
+    }
+
+    #[test]
+    fn test_poll_worktree_deletes_success() {
+        let mut list = SessionList::new(vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_path = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree_path).unwrap();
+        std::fs::write(worktree_path.join("file.txt"), b"x").unwrap();
+        let worktree_str = worktree_path.to_string_lossy().to_string();
+
+        list.spawn_worktree_delete("feat".to_string(), worktree_str.clone());
+        assert_eq!(list.pending_worktree_deletes.len(), 1);
+
+        // Wait for the background thread to finish.
+        let start = std::time::Instant::now();
+        loop {
+            list.poll_worktree_deletes();
+            if list.pending_worktree_deletes.is_empty() {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "timed out waiting for async worktree delete"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!worktree_path.exists());
+        let msg = list.status_message.as_ref().unwrap();
+        assert!(msg.contains("Deleted worktree for 'feat'"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_poll_worktree_deletes_failure_surfaces_error() {
+        let mut list = SessionList::new(vec![]);
+        let missing = "/definitely/does/not/exist/vd-test-xyz".to_string();
+
+        list.spawn_worktree_delete("feat".to_string(), missing.clone());
+
+        let start = std::time::Instant::now();
+        loop {
+            list.poll_worktree_deletes();
+            if list.pending_worktree_deletes.is_empty() {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "timed out waiting for failed delete"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let msg = list.status_message.as_ref().unwrap();
+        assert!(msg.contains("Failed to remove worktree"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_poll_worktree_deletes_pending_keeps_entry() {
+        // Channel with no sender drop and no result — entry must stay pending.
+        let mut list = SessionList::new(vec![]);
+        let (_tx, rx) = mpsc::channel::<Result<(), String>>();
+        list.pending_worktree_deletes.push(PendingWorktreeDelete {
+            session_name: "feat".to_string(),
+            worktree_path: "/tmp/x".to_string(),
+            rx,
+        });
+        list.poll_worktree_deletes();
+        assert_eq!(list.pending_worktree_deletes.len(), 1);
+        assert!(list.status_message.is_none());
     }
 }
