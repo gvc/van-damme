@@ -17,6 +17,11 @@ fn group_key(s: &SessionRecord) -> &str {
     &s.directory
 }
 
+#[allow(dead_code)]
+fn is_worktree_session(s: &SessionRecord) -> bool {
+    s.directory.contains("/.claude/worktrees/")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionListAction {
     None,

@@ -10,6 +10,8 @@ The session store. Owns an open file handle and an exclusive `flock` for its lif
 
 A single session entry in the store. Holds tmux identity (`tmux_session_id`, `tmux_session_name`), optional Claude identity (`claude_session_id`), working `directory`, `state`, and launch metadata (`claude_command`, `model_id`).
 
+For worktree sessions, `directory` is the worktree path itself (e.g. `/repo/.claude/worktrees/my-feature`), not the repo root. A session is a worktree session if and only if its `directory` contains `/.claude/worktrees/`.
+
 ## SessionState
 
 Lifecycle state of a Claude session: `Working` (Claude is running), `WaitingUser` (permission request pending), `Idle` (stopped). Updated by the process hook on Claude Code hook events.
