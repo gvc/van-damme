@@ -31,6 +31,12 @@ pub enum SessionListAction {
     Attach { session_name: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KillTarget {
+    name: String,
+    worktree_path: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct SessionList {
     list: GroupedList<SessionRecord>,
@@ -38,7 +44,7 @@ pub struct SessionList {
     search_active: bool,
     search_query: String,
     pub status_message: Option<String>,
-    confirm_kill: Option<String>,
+    confirm_kill: Option<KillTarget>,
     card_scroll_offset: usize,
     preview_content: Option<String>,
     preview_summary: Option<tmux::SessionSummary>,
@@ -152,11 +158,11 @@ impl SessionList {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> SessionListAction {
-        if let Some(ref name) = self.confirm_kill.clone() {
+        if let Some(target) = self.confirm_kill.clone() {
             self.confirm_kill = None;
             match key.code {
                 KeyCode::Char('x') | KeyCode::Char('y') => {
-                    self.kill_session(name);
+                    self.kill_session(&target.name, false);
                 }
                 _ => {
                     self.status_message = Some("Kill cancelled.".to_string());
@@ -265,14 +271,15 @@ impl SessionList {
     fn request_kill_selected(&mut self) {
         if let Some(session) = self.list.selected_item() {
             let name = session.tmux_session_name.clone();
+            let worktree_path = None;
             self.status_message = Some(format!(
                 "Kill '{name}'? Press x/y to confirm, any other key to cancel."
             ));
-            self.confirm_kill = Some(name);
+            self.confirm_kill = Some(KillTarget { name, worktree_path });
         }
     }
 
-    fn kill_session(&mut self, name: &str) {
+    fn kill_session(&mut self, name: &str, _delete_worktree: bool) {
         let _ = tmux::kill_session(name);
         if let Ok(path) = crate::session::default_db_path()
             && let Ok(mut db) = crate::session::SessionDb::open(&path)
@@ -837,7 +844,10 @@ mod tests {
         let mut list = SessionList::new(sample_grouped_sessions());
         let action = list.handle_key(key(KeyCode::Char('x')));
         assert_eq!(action, SessionListAction::None);
-        assert_eq!(list.confirm_kill, Some("alpha".to_string()));
+        assert_eq!(
+            list.confirm_kill,
+            Some(KillTarget { name: "alpha".to_string(), worktree_path: None })
+        );
         assert!(list.status_message.as_ref().unwrap().contains("confirm"));
     }
 
