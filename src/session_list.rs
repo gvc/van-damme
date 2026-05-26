@@ -316,7 +316,10 @@ impl SessionList {
 
         self.draw_session_panel(frame, chunks[0]);
         self.draw_preview_panel(frame, chunks[1]);
+        self.draw_status_bar(frame, area);
+    }
 
+    fn draw_status_bar(&self, frame: &mut Frame, area: Rect) {
         if let Some(ref msg) = self.status_message {
             let bg = if self.confirm_kill.is_some() {
                 theme::ORANGE
