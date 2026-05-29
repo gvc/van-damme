@@ -24,6 +24,43 @@ fn is_worktree_session(s: &SessionRecord) -> bool {
     s.directory.contains("/.claude/worktrees/")
 }
 
+/// Derive repo root from a worktree path like `/repo/.claude/worktrees/name`.
+fn repo_root_from_worktree(worktree_path: &str) -> Option<&str> {
+    worktree_path
+        .find("/.claude/worktrees/")
+        .map(|idx| &worktree_path[..idx])
+}
+
+/// Remove a git worktree properly: `git worktree remove --force`, then prune.
+/// Falls back to `remove_dir_all` if git command unavailable.
+fn remove_git_worktree(worktree_path: &str) -> Result<(), String> {
+    if let Some(repo_root) = repo_root_from_worktree(worktree_path) {
+        let status = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force", worktree_path])
+            .current_dir(repo_root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .status();
+
+        match status {
+            Ok(s) if s.success() => return Ok(()),
+            _ => {}
+        }
+
+        // Fallback: remove dir then prune stale metadata
+        let rm_result = std::fs::remove_dir_all(worktree_path).map_err(|e| e.to_string());
+        let _ = std::process::Command::new("git")
+            .args(["worktree", "prune"])
+            .current_dir(repo_root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        rm_result
+    } else {
+        std::fs::remove_dir_all(worktree_path).map_err(|e| e.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionListAction {
     None,
@@ -331,7 +368,7 @@ impl SessionList {
         let (tx, rx) = mpsc::channel();
         let path = worktree_path.clone();
         thread::spawn(move || {
-            let result = std::fs::remove_dir_all(&path).map_err(|e| e.to_string());
+            let result = remove_git_worktree(&path);
             let _ = tx.send(result);
         });
         self.pending_worktree_deletes.push(PendingWorktreeDelete {
@@ -1330,5 +1367,30 @@ mod tests {
         list.poll_worktree_deletes();
         assert_eq!(list.pending_worktree_deletes.len(), 1);
         assert!(list.status_message.is_none());
+    }
+
+    #[test]
+    fn test_repo_root_from_worktree_valid() {
+        assert_eq!(
+            repo_root_from_worktree("/home/user/repo/.claude/worktrees/feat"),
+            Some("/home/user/repo")
+        );
+    }
+
+    #[test]
+    fn test_repo_root_from_worktree_not_a_worktree() {
+        assert_eq!(repo_root_from_worktree("/home/user/repo"), None);
+    }
+
+    #[test]
+    fn test_remove_git_worktree_fallback_removes_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Path doesn't contain /.claude/worktrees/ so falls back to remove_dir_all
+        let dir = tmp.path().join("some-dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.txt"), b"x").unwrap();
+        let result = remove_git_worktree(&dir.to_string_lossy());
+        assert!(result.is_ok());
+        assert!(!dir.exists());
     }
 }
