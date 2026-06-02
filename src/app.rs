@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Flex, Layout, Position},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use std::path::Path;
 use tui_input::Input;
@@ -883,8 +883,17 @@ impl App {
         //       + 1 (cmd label) + 3 (cmd input) + 1 (model selector) + 1 (hints)
         let form_height =
             (17 + branch_extra + prompt_box_height).min(area.height.saturating_sub(2));
-        // +1 for error line below the box
-        let total_height = form_height + 1;
+
+        // Error block height: wrap message to form width (minus 2 for padding spaces)
+        let error_lines = self
+            .error_message
+            .as_deref()
+            .map(|m| {
+                let inner = (form_width as usize).saturating_sub(2).max(1);
+                ((m.len() as f64 / inner as f64).ceil() as u16).max(1)
+            })
+            .unwrap_or(1);
+        let total_height = form_height + error_lines;
 
         let vertical = Layout::vertical([Constraint::Length(total_height)])
             .flex(Flex::Center)
@@ -894,10 +903,12 @@ impl App {
             .split(vertical[0]);
         let outer_area = horizontal[0];
 
-        // Split into form box and error line below
-        let outer_chunks =
-            Layout::vertical([Constraint::Length(form_height), Constraint::Length(1)])
-                .split(outer_area);
+        // Split into form box and error block below
+        let outer_chunks = Layout::vertical([
+            Constraint::Length(form_height),
+            Constraint::Length(error_lines),
+        ])
+        .split(outer_area);
         let form_area = outer_chunks[0];
         let error_area = outer_chunks[1];
 
@@ -1193,11 +1204,12 @@ impl App {
         frame.render_widget(hints, chunks[hints_idx]);
 
         if let Some(ref err) = self.error_message {
-            let error_para = Paragraph::new(Line::from(Span::styled(
+            let error_para = Paragraph::new(Span::styled(
                 format!(" {err} "),
                 Style::default().fg(Color::White).bg(theme::ERROR),
-            )))
-            .alignment(Alignment::Center);
+            ))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false });
             frame.render_widget(error_para, error_area);
         }
 
@@ -1394,7 +1406,17 @@ impl App {
         let form_width = 90u16.min(area.width.saturating_sub(2));
         // 2 (outer border) + 1 (title label) + 3 (title input) + 1 (dir label) + 3 (dir input) + 1 (hints) = 11
         let form_height = 11u16.min(area.height.saturating_sub(2));
-        let total_height = form_height + 1; // +1 for error line
+
+        // Error block height: wrap message to form width (minus 2 for padding spaces)
+        let error_lines = self
+            .error_message
+            .as_deref()
+            .map(|m| {
+                let inner = (form_width as usize).saturating_sub(2).max(1);
+                ((m.len() as f64 / inner as f64).ceil() as u16).max(1)
+            })
+            .unwrap_or(1);
+        let total_height = form_height + error_lines;
 
         let vertical = Layout::vertical([Constraint::Length(total_height)])
             .flex(Flex::Center)
@@ -1404,9 +1426,11 @@ impl App {
             .split(vertical[0]);
         let outer_area = horizontal[0];
 
-        let outer_chunks =
-            Layout::vertical([Constraint::Length(form_height), Constraint::Length(1)])
-                .split(outer_area);
+        let outer_chunks = Layout::vertical([
+            Constraint::Length(form_height),
+            Constraint::Length(error_lines),
+        ])
+        .split(outer_area);
         let form_area = outer_chunks[0];
         let error_area = outer_chunks[1];
 
@@ -1511,11 +1535,12 @@ impl App {
 
         // Error message
         if let Some(ref err) = self.error_message {
-            let error_para = Paragraph::new(Line::from(Span::styled(
+            let error_para = Paragraph::new(Span::styled(
                 format!(" {err} "),
                 Style::default().fg(Color::White).bg(theme::ERROR),
-            )))
-            .alignment(Alignment::Center);
+            ))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false });
             frame.render_widget(error_para, error_area);
         }
 

@@ -254,10 +254,14 @@ impl<'a> SessionLauncher<'a> {
 
         on_step("Creating tmux session...");
 
+        // tmux working dir: for new worktrees the worktree path doesn't exist yet
+        // (Claude's --worktree flag creates it), so start tmux in the repo dir.
+        let tmux_cwd = if use_worktree { directory } else { &dir };
+
         // Step 3: tmux create
         let tmux_session = match self.tmux.create_session(
             &session_name,
-            &dir,
+            tmux_cwd,
             prompt,
             None,
             claude_session_id,
@@ -358,6 +362,7 @@ mod tests {
         exists: bool,
         create_result: Result<TmuxSession>,
         kill_calls: RefCell<Vec<String>>,
+        last_dir: RefCell<Option<String>>,
     }
 
     impl FakeTmux {
@@ -368,6 +373,7 @@ mod tests {
                     session_id: "$1".to_string(),
                 }),
                 kill_calls: RefCell::new(vec![]),
+                last_dir: RefCell::new(None),
             }
         }
         fn failing() -> Self {
@@ -375,6 +381,7 @@ mod tests {
                 exists: false,
                 create_result: Err(color_eyre::eyre::eyre!("tmux failed")),
                 kill_calls: RefCell::new(vec![]),
+                last_dir: RefCell::new(None),
             }
         }
         fn kill_called(&self) -> bool {
@@ -389,7 +396,7 @@ mod tests {
         fn create_session(
             &self,
             _name: &str,
-            _dir: &str,
+            dir: &str,
             _prompt: Option<&str>,
             _claude_args: Option<&str>,
             _claude_session_id: &str,
@@ -397,6 +404,7 @@ mod tests {
             _claude_command: &str,
             _model_id: Option<&str>,
         ) -> Result<TmuxSession> {
+            *self.last_dir.borrow_mut() = Some(dir.to_string());
             match &self.create_result {
                 Ok(s) => Ok(TmuxSession {
                     session_id: s.session_id.clone(),
@@ -569,5 +577,86 @@ mod tests {
             db.sessions[0].directory,
             "/repo/.claude/worktrees/my-feature"
         );
+    }
+
+    #[test]
+    fn worktree_mode_passes_repo_dir_to_tmux_not_worktree_path() {
+        // The worktree path doesn't exist yet (Claude --worktree creates it),
+        // so tmux must start in the repo dir, not the would-be worktree path.
+        let git = FakeGit::ok();
+        let tmux = FakeTmux::ok();
+        let mut db = FakeDb::ok();
+
+        SessionLauncher::new(&git, &tmux, &mut db)
+            .launch(
+                "new-feat",
+                "/repo",
+                GitMode::Worktree,
+                None,
+                None,
+                "claude",
+                ModelSelection::Default,
+                "uuid-3",
+                &|_| {},
+            )
+            .unwrap();
+
+        assert_eq!(
+            tmux.last_dir.borrow().as_deref(),
+            Some("/repo"),
+            "tmux -c must be the repo dir for new worktrees"
+        );
+        // But the session record still points at the worktree path.
+        assert_eq!(db.sessions[0].directory, "/repo/.claude/worktrees/new-feat");
+    }
+
+    #[test]
+    fn existing_worktree_passes_worktree_path_to_tmux() {
+        let git = FakeGit::ok();
+        let tmux = FakeTmux::ok();
+        let mut db = FakeDb::ok();
+
+        SessionLauncher::new(&git, &tmux, &mut db)
+            .launch(
+                "my-feat",
+                "/repo",
+                GitMode::ExistingWorktree,
+                None,
+                None,
+                "claude",
+                ModelSelection::Default,
+                "uuid-4",
+                &|_| {},
+            )
+            .unwrap();
+
+        assert_eq!(
+            tmux.last_dir.borrow().as_deref(),
+            Some("/repo/.claude/worktrees/my-feat"),
+            "tmux -c is the existing worktree path"
+        );
+    }
+
+    #[test]
+    fn branch_mode_passes_directory_to_tmux() {
+        let git = FakeGit::ok();
+        let tmux = FakeTmux::ok();
+        let mut db = FakeDb::ok();
+
+        SessionLauncher::new(&git, &tmux, &mut db)
+            .launch(
+                "feat",
+                "/repo",
+                GitMode::Branch,
+                Some("my-branch"),
+                None,
+                "claude",
+                ModelSelection::Default,
+                "uuid-5",
+                &|_| {},
+            )
+            .unwrap();
+
+        assert_eq!(tmux.last_dir.borrow().as_deref(), Some("/repo"));
     }
 }
