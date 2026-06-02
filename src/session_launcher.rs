@@ -186,18 +186,20 @@ impl<'a> SessionLauncher<'a> {
 
         // Step 1: git prep
         let use_worktree = git_mode == GitMode::Worktree;
-        let effective_directory = if git_mode == GitMode::ExistingWorktree {
-            // Launch Claude directly inside the existing worktree directory
-            let worktree_path = std::path::Path::new(directory)
-                .join(".claude")
-                .join("worktrees")
-                .join(title);
-            worktree_path
-                .to_str()
-                .ok_or_else(|| color_eyre::eyre::eyre!("Worktree path contains invalid UTF-8"))?
-                .to_string()
-        } else {
-            directory.to_string()
+        let effective_directory = match git_mode {
+            GitMode::Worktree | GitMode::ExistingWorktree => {
+                let worktree_path = std::path::Path::new(directory)
+                    .join(".claude")
+                    .join("worktrees")
+                    .join(&session_name);
+                worktree_path
+                    .to_str()
+                    .ok_or_else(|| {
+                        color_eyre::eyre::eyre!("Worktree path contains invalid UTF-8")
+                    })?
+                    .to_string()
+            }
+            _ => directory.to_string(),
         };
         let git_undo = match git_mode {
             GitMode::Worktree => self.git.prepare_worktree(directory, on_step)?,
@@ -476,6 +478,17 @@ mod tests {
         assert_eq!(db.sessions.len(), 1);
         assert_eq!(db.sessions[0].tmux_session_id, "$1");
         assert_eq!(db.sessions[0].tmux_session_name, "test");
+    }
+
+    #[test]
+    fn worktree_mode_stores_worktree_directory() {
+        let git = FakeGit::ok();
+        let tmux = FakeTmux::ok();
+        let mut db = FakeDb::ok();
+
+        launch(&git, &tmux, &mut db).unwrap();
+
+        assert_eq!(db.sessions[0].directory, "/tmp/.claude/worktrees/test");
     }
 
     #[test]
