@@ -4,6 +4,40 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const VD_COMMAND: &str = "vd process-hook";
+
+const SYNDICATE_TOML: &str = r##"# Syndicate — cyberpunk dark (VD built-in)
+bg           = "#121a24"
+text         = "#8a9aaa"
+border       = "#3a5a7a"
+border_bright= "#c86818"
+accent       = "#c86818"
+accent_bright= "#f09020"
+gray         = "#505860"
+gray_dim     = "#506070"
+cyan         = "#40a0b0"
+cyan_vivid   = "#00d8e0"
+green        = "#40a040"
+error        = "#802020"
+session_name = "#e0a030"
+neon_pink    = "#e03080"
+"##;
+
+const IMLADRIS_DARK_TOML: &str = r##"# Imladris dark — evening Rivendell
+bg           = "#2a2520"
+text         = "#e8d9b8"
+border       = "#4a4034"
+border_bright= "#e78a4e"
+accent       = "#e78a4e"
+accent_bright= "#d8a657"
+gray         = "#a89984"
+gray_dim     = "#7c6f57"
+cyan         = "#89b482"
+cyan_vivid   = "#7daea3"
+green        = "#a9b665"
+error        = "#ea6962"
+session_name = "#d8a657"
+neon_pink    = "#d3869b"
+"##;
 const LEGACY_COMMAND: &str = "van-damme process-hook";
 const REQUIRED_EVENTS: &[&str] = &[
     "SessionStart",
@@ -18,6 +52,7 @@ pub struct InstallReport {
     pub hooks_added: Vec<String>,
     pub hooks_already_present: Vec<String>,
     pub hooks_upgraded: Vec<String>,
+    pub themes_written: Vec<String>,
 }
 
 pub struct UninstallReport {
@@ -107,6 +142,7 @@ pub fn install(settings_path: &Path) -> Result<InstallReport> {
         hooks_added: Vec::new(),
         hooks_already_present: Vec::new(),
         hooks_upgraded: Vec::new(),
+        themes_written: Vec::new(),
     };
 
     let hooks = settings
@@ -192,6 +228,22 @@ pub fn uninstall(settings_path: &Path) -> Result<UninstallReport> {
     Ok(report)
 }
 
+fn write_built_in_themes(data_dir: &Path) -> Result<Vec<String>> {
+    let themes_dir = data_dir.join("themes");
+    fs::create_dir_all(&themes_dir)?;
+    let themes = [
+        ("syndicate", SYNDICATE_TOML),
+        ("imladris-dark", IMLADRIS_DARK_TOML),
+    ];
+    let mut written = Vec::new();
+    for (name, content) in themes {
+        let path = themes_dir.join(format!("{name}.toml"));
+        fs::write(&path, content)?;
+        written.push(name.to_string());
+    }
+    Ok(written)
+}
+
 pub fn run_install() -> Result<()> {
     let data_dir = vd_data_dir()?;
     let data_dir_created = !data_dir.exists();
@@ -202,6 +254,7 @@ pub fn run_install() -> Result<()> {
     let settings_path = claude_settings_path()?;
     let mut report = install(&settings_path)?;
     report.data_dir_created = data_dir_created;
+    report.themes_written = write_built_in_themes(&data_dir)?;
 
     println!("vd install complete:");
     if report.data_dir_created {
@@ -218,6 +271,10 @@ pub fn run_install() -> Result<()> {
     }
     for event in &report.hooks_already_present {
         println!("  ✓ {event} hook already present");
+    }
+    let themes_dir = data_dir.join("themes");
+    for name in &report.themes_written {
+        println!("  ✓ theme {}/{name}.toml", themes_dir.display());
     }
     Ok(())
 }
@@ -398,5 +455,35 @@ mod tests {
             "hooks": [{ "type": "command", "command": "other-tool" }]
         })];
         assert!(!has_vd_hook(&groups));
+    }
+
+    #[test]
+    fn test_write_built_in_themes_creates_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let written = write_built_in_themes(tmp.path()).unwrap();
+        assert!(written.contains(&"syndicate".to_string()));
+        assert!(written.contains(&"imladris-dark".to_string()));
+        assert!(tmp.path().join("themes/syndicate.toml").exists());
+        assert!(tmp.path().join("themes/imladris-dark.toml").exists());
+    }
+
+    #[test]
+    fn test_syndicate_toml_parses_correctly() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_built_in_themes(tmp.path()).unwrap();
+        let path = tmp.path().join("themes/syndicate.toml");
+        let t = crate::theme::parse_theme_file(&path);
+        assert_eq!(t.bg, ratatui::style::Color::Rgb(0x12, 0x1a, 0x24));
+        assert_eq!(t.accent, ratatui::style::Color::Rgb(0xc8, 0x68, 0x18));
+    }
+
+    #[test]
+    fn test_imladris_dark_toml_parses_correctly() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_built_in_themes(tmp.path()).unwrap();
+        let path = tmp.path().join("themes/imladris-dark.toml");
+        let t = crate::theme::parse_theme_file(&path);
+        assert_eq!(t.bg, ratatui::style::Color::Rgb(0x2a, 0x25, 0x20));
+        assert_eq!(t.green, ratatui::style::Color::Rgb(0xa9, 0xb6, 0x65));
     }
 }
