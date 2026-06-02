@@ -54,3 +54,34 @@ Return value of `git::prepare_branch` and `git::prepare_worktree`. Describes how
 ## GitAdapter / TmuxAdapter / SessionDbAdapter
 
 Three traits in `src/session_launcher.rs` that `SessionLauncher` depends on. Production impls: `RealGitAdapter` (delegates to `git::`), `RealTmuxAdapter` (delegates to `tmux::`), `RealSessionDb` (wraps `SessionDb` with `insert`/`remove_by_name`/`update_tmux_id` methods). Test fakes live in `session_launcher.rs` `#[cfg(test)]`.
+
+## Theme
+
+A flat set of named color slots loaded at startup and hot-reloaded when `preferences.json` changes. Stored as a `Theme` struct in `src/theme.rs`, passed as `&Theme` to every render function — no global state.
+
+Built-in themes are TOML files installed to `~/.van-damme/themes/<name>.toml` by `vd install`. `preferences.json` stores `"theme": "<name>"` (bare name, no path). The app resolves `~/.van-damme/themes/<name>.toml` at load time. Missing file falls back to built-in syndicate constants.
+
+Hot reload: the main tick loop checks `preferences.json` mtime each tick (~1 s). On change, full `Preferences` is re-parsed and the new theme file is loaded.
+
+### Theme TOML slots
+
+| Key | Role |
+|-----|------|
+| `bg` | Primary surface / background |
+| `text` | Default text |
+| `border` | Borders and outlines |
+| `border_bright` | Active / focused border |
+| `accent` | Primary accent (titles, highlights) |
+| `accent_bright` | Bright accent (active indicators) |
+| `gray` | Brackets, operators, inactive |
+| `gray_dim` | Muted / comments / inactive |
+| `cyan` | Active windows, info |
+| `cyan_vivid` | Bright indicators |
+| `green` | Success, git add |
+| `error` | Errors, critical |
+| `session_name` | Session name label color |
+
+### Built-in themes
+
+- **syndicate** — cyberpunk dark: navy background, warm orange accents, electric cyan. Installed to `~/.van-damme/themes/syndicate.toml` by `vd install`.
+- **imladris-dark** — evening Rivendell: warm walnut background, candlelit cream text, earthy accents (gold, orange, moss, slate). Maintained in user dotfiles.
