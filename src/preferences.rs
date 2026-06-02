@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 struct Preferences {
     #[serde(default)]
     pub last_model: Option<String>,
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 fn default_prefs_path() -> Result<PathBuf> {

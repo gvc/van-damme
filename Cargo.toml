@@ -14,6 +14,7 @@ tui-input = "0.11"
 uuid = { version = "1", features = ["v4"] }
 libc = "0.2"
 fastrand = "2"
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 
 [[bin]]
 name = "vd"
