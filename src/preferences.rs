@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::theme::{self, Theme};
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct Preferences {
     #[serde(default)]
@@ -53,14 +55,83 @@ fn save_last_model_to(path: &Path, model_id: Option<&str>) -> Result<()> {
     save_prefs_to(path, &prefs)
 }
 
+pub fn themes_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".van-damme").join("themes"))
+}
+
+/// Load Theme from ~/.van-damme/themes/<name>.toml. Falls back to SYNDICATE.
+pub fn load_theme() -> Theme {
+    load_theme_inner().unwrap_or_else(|| theme::SYNDICATE.clone())
+}
+
+fn load_theme_inner() -> Option<Theme> {
+    let path = default_prefs_path().ok()?;
+    let prefs = load_prefs_from(&path).ok()?;
+    let name = prefs.theme?;
+    let theme_path = themes_dir()?.join(format!("{name}.toml"));
+    Some(theme::parse_theme_file(&theme_path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn temp_path() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("preferences.json");
         (tmp, path)
+    }
+
+    fn load_theme_from(prefs_path: &Path) -> Theme {
+        let prefs = load_prefs_from(prefs_path).unwrap_or_default();
+        let name = match prefs.theme {
+            Some(n) => n,
+            None => return theme::SYNDICATE.clone(),
+        };
+        let theme_path = prefs_path
+            .parent()
+            .unwrap()
+            .join("themes")
+            .join(format!("{name}.toml"));
+        theme::parse_theme_file(&theme_path)
+    }
+
+    #[test]
+    fn test_load_theme_no_theme_field_returns_syndicate() {
+        let (_tmp, path) = temp_path();
+        save_last_model_to(&path, Some("claude-sonnet-4-6")).unwrap();
+        let t = load_theme_from(&path);
+        assert_eq!(t.bg, theme::SYNDICATE.bg);
+    }
+
+    #[test]
+    fn test_load_theme_missing_file_returns_syndicate() {
+        let (_tmp, path) = temp_path();
+        let mut prefs = Preferences::default();
+        prefs.theme = Some("nonexistent".to_string());
+        save_prefs_to(&path, &prefs).unwrap();
+        let t = load_theme_from(&path);
+        assert_eq!(t.bg, theme::SYNDICATE.bg);
+    }
+
+    #[test]
+    fn test_load_theme_reads_toml_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prefs_path = tmp.path().join("preferences.json");
+        let themes_dir = tmp.path().join("themes");
+        std::fs::create_dir_all(&themes_dir).unwrap();
+        let theme_path = themes_dir.join("mytest.toml");
+        let mut f = std::fs::File::create(&theme_path).unwrap();
+        writeln!(f, "bg = \"#ff0000\"").unwrap();
+
+        let mut prefs = Preferences::default();
+        prefs.theme = Some("mytest".to_string());
+        save_prefs_to(&prefs_path, &prefs).unwrap();
+
+        let t = load_theme_from(&prefs_path);
+        assert_eq!(t.bg, ratatui::style::Color::Rgb(0xff, 0x00, 0x00));
+        assert_eq!(t.text, theme::SYNDICATE.text);
     }
 
     #[test]

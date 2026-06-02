@@ -103,7 +103,9 @@ fn main() -> Result<()> {
     let mut screen = Screen::SessionList;
     let mut launch_state: Option<LaunchState> = None;
     let mut running = true;
-    let t = &theme::SYNDICATE;
+    #[allow(unused_mut)]
+    let mut current_theme = preferences::load_theme();
+    let t = &current_theme;
 
     while running {
         terminal.draw(|frame| {
