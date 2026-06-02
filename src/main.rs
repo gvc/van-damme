@@ -488,6 +488,7 @@ fn launch_tmux_session(
             state: session::SessionState::Idle,
             claude_command: "claude".to_string(),
             model_id: None,
+            branch_name: None,
         });
         db.save()?;
     }

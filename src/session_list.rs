@@ -17,7 +17,7 @@ use crate::theme;
 use crate::tmux;
 
 fn group_key(s: &SessionRecord) -> &str {
-    &s.directory
+    repo_root_from_worktree(&s.directory).unwrap_or(&s.directory)
 }
 
 fn is_worktree_session(s: &SessionRecord) -> bool {
@@ -153,7 +153,9 @@ impl SessionList {
             self.all_sessions
                 .iter()
                 .filter(|s| {
-                    shorten_path(&s.directory, usize::MAX)
+                    let display_dir =
+                        repo_root_from_worktree(&s.directory).unwrap_or(&s.directory);
+                    shorten_path(display_dir, usize::MAX)
                         .to_lowercase()
                         .contains(&q)
                 })
@@ -787,10 +789,23 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
         rows[0],
     );
 
-    let dir = shorten_path(&session.directory, content_w);
+    let display_dir = repo_root_from_worktree(&session.directory).unwrap_or(&session.directory);
+    let git_indicator = if is_worktree_session(session) {
+        crate::session::branch_name_from_worktree(&session.directory)
+            .map(|b| format!("  ⑂ {b}"))
+            .unwrap_or_default()
+    } else if let Some(ref b) = session.branch_name {
+        format!("  ⎇ {b}")
+    } else {
+        String::new()
+    };
+    let indicator_len = git_indicator.chars().count();
+    let max_dir = content_w.saturating_sub(indicator_len);
+    let short_dir = shorten_path(display_dir, max_dir);
+    let dir_line = format!("{short_dir}{git_indicator}");
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            dir,
+            dir_line,
             Style::default().fg(theme::GRAY_DIM),
         ))),
         rows[1],
@@ -868,6 +883,7 @@ mod tests {
                 state: SessionState::Idle,
                 claude_command: "claude".to_string(),
                 model_id: None,
+                branch_name: None,
             },
             SessionRecord {
                 tmux_session_id: "$2".to_string(),
@@ -878,6 +894,7 @@ mod tests {
                 state: SessionState::Working,
                 claude_command: "claude".to_string(),
                 model_id: None,
+                branch_name: None,
             },
             SessionRecord {
                 tmux_session_id: "$3".to_string(),
@@ -888,6 +905,7 @@ mod tests {
                 state: SessionState::Idle,
                 claude_command: "claude".to_string(),
                 model_id: None,
+                branch_name: None,
             },
         ]
     }
@@ -1077,6 +1095,7 @@ mod tests {
             state: SessionState::Idle,
             claude_command: "claude".to_string(),
             model_id: None,
+            branch_name: None,
         };
         let tag = match &session.model_id {
             Some(m) => format!("[{} | {}]", session.claude_command, m),
@@ -1096,6 +1115,7 @@ mod tests {
             state: SessionState::Idle,
             claude_command: "claude".to_string(),
             model_id: Some("claude-sonnet-4-6".to_string()),
+            branch_name: None,
         };
         let tag = match &session.model_id {
             Some(m) => format!("[{} | {}]", session.claude_command, m),
@@ -1243,6 +1263,7 @@ mod tests {
             state: SessionState::Idle,
             claude_command: "claude".to_string(),
             model_id: None,
+            branch_name: None,
         }
     }
 

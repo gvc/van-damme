@@ -240,6 +240,11 @@ impl<'a> SessionLauncher<'a> {
             state: SessionState::Idle,
             claude_command: claude_command.to_string(),
             model_id: model_selection.model_id().map(str::to_string),
+            branch_name: if git_mode == GitMode::Branch {
+                branch_name.map(str::to_string)
+            } else {
+                None
+            },
         };
 
         if let Err(e) = self.db.insert(record) {

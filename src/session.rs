@@ -35,6 +35,8 @@ pub struct SessionRecord {
     pub claude_command: String,
     #[serde(default)]
     pub model_id: Option<String>,
+    #[serde(default)]
+    pub branch_name: Option<String>,
 }
 
 fn default_state() -> SessionState {
@@ -43,6 +45,14 @@ fn default_state() -> SessionState {
 
 fn default_claude_command() -> String {
     "claude".to_string()
+}
+
+pub fn branch_name_from_worktree(worktree_path: &str) -> Option<&str> {
+    let marker = "/.claude/worktrees/";
+    worktree_path
+        .find(marker)
+        .map(|idx| &worktree_path[idx + marker.len()..])
+        .filter(|s| !s.is_empty())
 }
 
 pub struct SessionDb {
@@ -146,6 +156,7 @@ mod tests {
             state: SessionState::Idle,
             claude_command: "claude".to_string(),
             model_id: None,
+            branch_name: None,
         }
     }
 
@@ -294,6 +305,7 @@ mod tests {
             state: SessionState::Idle,
             claude_command: "claude".to_string(),
             model_id: None,
+            branch_name: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         let deserialized: SessionRecord = serde_json::from_str(&json).unwrap();
@@ -344,6 +356,57 @@ mod tests {
         assert_eq!(SessionState::Working.to_string(), "Working");
         assert_eq!(SessionState::WaitingUser.to_string(), "Waiting User");
         assert_eq!(SessionState::Idle.to_string(), "Idle");
+    }
+
+    #[test]
+    fn test_branch_name_from_worktree_valid() {
+        assert_eq!(
+            branch_name_from_worktree("/repo/.claude/worktrees/my-feat"),
+            Some("my-feat")
+        );
+    }
+
+    #[test]
+    fn test_branch_name_from_worktree_nested() {
+        assert_eq!(
+            branch_name_from_worktree("/home/user/proj/.claude/worktrees/fix-123"),
+            Some("fix-123")
+        );
+    }
+
+    #[test]
+    fn test_branch_name_from_worktree_not_worktree() {
+        assert_eq!(branch_name_from_worktree("/home/user/proj"), None);
+    }
+
+    #[test]
+    fn test_branch_name_defaults_to_none_on_deserialize() {
+        let json = r#"{
+            "tmux_session_id": "$1",
+            "tmux_session_name": "legacy",
+            "claude_session_id": null,
+            "directory": "/tmp",
+            "created_at": 100
+        }"#;
+        let record: SessionRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.branch_name, None);
+    }
+
+    #[test]
+    fn test_branch_name_roundtrip() {
+        let (_tmp, path) = temp_db_path();
+        {
+            let mut db = SessionDb::open(&path).unwrap();
+            let mut r = make_record("branch-session", Some("uuid-br"));
+            r.branch_name = Some("feat/my-feature".to_string());
+            db.sessions.push(r);
+            db.save().unwrap();
+        }
+        let db = SessionDb::open(&path).unwrap();
+        assert_eq!(
+            db.sessions[0].branch_name,
+            Some("feat/my-feature".to_string())
+        );
     }
 
     #[test]

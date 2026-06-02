@@ -8,9 +8,20 @@ The session store. Owns an open file handle and an exclusive `flock` for its lif
 
 ## SessionRecord
 
-A single session entry in the store. Holds tmux identity (`tmux_session_id`, `tmux_session_name`), optional Claude identity (`claude_session_id`), working `directory`, `state`, and launch metadata (`claude_command`, `model_id`).
+A single session entry in the store. Holds tmux identity (`tmux_session_id`, `tmux_session_name`), optional Claude identity (`claude_session_id`), working `directory`, `state`, and launch metadata (`claude_command`, `model_id`, `branch_name`).
 
 For worktree sessions, `directory` is the worktree path itself (e.g. `/repo/.claude/worktrees/my-feature`), not the repo root. A session is a worktree session if and only if its `directory` contains `/.claude/worktrees/`.
+
+`branch_name` is `Some(branch)` for `GitMode::Branch` sessions; `None` for worktree and plain sessions. The branch name for worktree sessions is derived from the last path segment of `directory` at display time — it is not stored separately.
+
+## Display directory
+
+The listing shows a "display directory" and an optional git indicator on the card's second row:
+- Worktree session: repo root + `⑂ branch-name` (branch derived from last segment of worktree path)
+- Branch session: repo root + `⎇ branch-name` (from `branch_name` field)
+- Plain session: repo root (= `directory`)
+
+Group headers always show the display directory (repo root), never a git indicator. Sessions group by display directory so worktree and plain sessions in the same repo share a group.
 
 ## SessionState
 
