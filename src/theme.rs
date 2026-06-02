@@ -35,17 +35,3 @@ pub const SYNDICATE: Theme = Theme {
     neon_pink: Color::Rgb(0xe0, 0x30, 0x80),
 };
 
-// Legacy const aliases — call sites still compile until &Theme threading lands.
-pub const BG: Color = SYNDICATE.bg;
-pub const ORANGE: Color = SYNDICATE.accent;
-pub const ORANGE_BRIGHT: Color = SYNDICATE.accent_bright;
-pub const BLUE: Color = SYNDICATE.border;
-pub const GRAY: Color = SYNDICATE.gray;
-pub const GRAY_DIM: Color = SYNDICATE.gray_dim;
-pub const TEXT: Color = SYNDICATE.text;
-pub const CYAN: Color = SYNDICATE.cyan;
-pub const CYAN_VIVID: Color = SYNDICATE.cyan_vivid;
-pub const GREEN: Color = SYNDICATE.green;
-pub const ERROR: Color = SYNDICATE.error;
-pub const SESSION_NAME: Color = SYNDICATE.session_name;
-pub const NEON_PINK: Color = SYNDICATE.neon_pink;

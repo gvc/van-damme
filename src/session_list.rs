@@ -13,7 +13,7 @@ use ratatui::{
 use crate::grouped_list::{GroupedList, VisibleRow};
 use crate::session::{SessionRecord, SessionState};
 use crate::splash::SplashState;
-use crate::theme;
+use crate::theme::Theme;
 use crate::tmux;
 
 fn group_key(s: &SessionRecord) -> &str {
@@ -424,10 +424,10 @@ impl SessionList {
         }
     }
 
-    pub fn draw(&mut self, frame: &mut Frame) {
+    pub fn draw(&mut self, frame: &mut Frame, t: &Theme) {
         let area = frame.area();
 
-        frame.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
+        frame.render_widget(Block::default().style(Style::default().bg(t.bg)), area);
 
         const LEFT_WIDTH: u16 = 54;
         let chunks = Layout::horizontal([
@@ -436,21 +436,21 @@ impl SessionList {
         ])
         .split(area);
 
-        self.draw_session_panel(frame, chunks[0]);
-        self.draw_preview_panel(frame, chunks[1]);
-        self.draw_status_bar(frame, area);
+        self.draw_session_panel(frame, chunks[0], t);
+        self.draw_preview_panel(frame, chunks[1], t);
+        self.draw_status_bar(frame, area, t);
     }
 
-    fn draw_status_bar(&self, frame: &mut Frame, area: Rect) {
+    fn draw_status_bar(&self, frame: &mut Frame, area: Rect, t: &Theme) {
         if let Some(ref msg) = self.status_message {
             let bg = if self.confirm_kill.is_some() {
-                theme::ORANGE
+                t.accent
             } else if msg.starts_with("Deleted session") {
-                theme::GREEN
+                t.green
             } else if msg.starts_with("Kill cancelled") {
-                theme::GRAY
+                t.gray
             } else {
-                theme::ERROR
+                t.error
             };
             let msg_text = format!(" {msg} ");
             let width = area.width as usize;
@@ -486,17 +486,17 @@ impl SessionList {
         }
     }
 
-    fn draw_session_panel(&mut self, frame: &mut Frame, area: Rect) {
+    fn draw_session_panel(&mut self, frame: &mut Frame, area: Rect, t: &Theme) {
         let outer_block = Block::default()
             .title(" ACTIVE SESSIONS ")
             .title_style(
                 Style::default()
-                    .fg(theme::ORANGE_BRIGHT)
+                    .fg(t.accent_bright)
                     .add_modifier(Modifier::BOLD),
             )
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::ORANGE))
-            .style(Style::default().bg(theme::BG));
+            .border_style(Style::default().fg(t.accent))
+            .style(Style::default().bg(t.bg));
         let inner = outer_block.inner(area);
         frame.render_widget(outer_block, area);
 
@@ -508,14 +508,14 @@ impl SessionList {
             let y = cards_area.y + cards_area.height.saturating_sub(2) / 2;
             frame.render_widget(
                 Paragraph::new("No active sessions.")
-                    .style(Style::default().fg(theme::GRAY_DIM))
+                    .style(Style::default().fg(t.gray_dim))
                     .alignment(Alignment::Center),
                 Rect::new(cards_area.x, y, cards_area.width, 1),
             );
             if y + 1 < cards_area.y + cards_area.height {
                 frame.render_widget(
                     Paragraph::new("Press 'n' to create one.")
-                        .style(Style::default().fg(theme::GRAY_DIM))
+                        .style(Style::default().fg(t.gray_dim))
                         .alignment(Alignment::Center),
                     Rect::new(cards_area.x, y + 1, cards_area.width, 1),
                 );
@@ -578,11 +578,11 @@ impl SessionList {
                         let header_text = format!("{arrow}{short_dir}");
                         let header_style = if is_selected {
                             Style::default()
-                                .fg(theme::ORANGE_BRIGHT)
+                                .fg(t.accent_bright)
                                 .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
-                                .fg(theme::CYAN)
+                                .fg(t.cyan)
                                 .add_modifier(Modifier::BOLD)
                         };
                         frame.render_widget(
@@ -599,7 +599,7 @@ impl SessionList {
                             break;
                         }
                         let card_area = Rect::new(cards_area.x, y, cards_area.width, CARD_HEIGHT);
-                        draw_session_card(frame, card_area, item, selected);
+                        draw_session_card(frame, card_area, item, selected, t);
                         y += CARD_HEIGHT;
                     }
                 }
@@ -612,11 +612,11 @@ impl SessionList {
                 Paragraph::new(vec![
                     Line::from(Span::styled(
                         query_line,
-                        Style::default().fg(theme::ORANGE_BRIGHT),
+                        Style::default().fg(t.accent_bright),
                     )),
                     Line::from(Span::styled(
                         "Esc:cancel · Enter:select · ↑/↓:navigate",
-                        Style::default().fg(theme::GRAY_DIM),
+                        Style::default().fg(t.gray_dim),
                     )),
                 ])
                 .alignment(Alignment::Center),
@@ -627,11 +627,11 @@ impl SessionList {
                 Paragraph::new(vec![
                     Line::from(Span::styled(
                         "j/k:navigate · a:attach · x:kill · z:collapse · Z:all",
-                        Style::default().fg(theme::GRAY_DIM),
+                        Style::default().fg(t.gray_dim),
                     )),
                     Line::from(Span::styled(
                         "/:search · n:new task · t:tmux · Ctrl+Q:quit",
-                        Style::default().fg(theme::GRAY_DIM),
+                        Style::default().fg(t.gray_dim),
                     )),
                 ])
                 .alignment(Alignment::Center),
@@ -640,7 +640,7 @@ impl SessionList {
         }
     }
 
-    fn draw_preview_panel(&mut self, frame: &mut Frame, area: Rect) {
+    fn draw_preview_panel(&mut self, frame: &mut Frame, area: Rect, t: &Theme) {
         if area.width < 4 {
             return;
         }
@@ -648,19 +648,19 @@ impl SessionList {
         let selected = self.list.selected_item();
 
         let (title, border_fg) = match selected {
-            Some(s) => (format!(" {} ", s.tmux_session_name), theme::ORANGE),
+            Some(s) => (format!(" {} ", s.tmux_session_name), t.accent),
             None => match self.list.selected_header() {
-                Some(dir) => (format!(" {} ", shorten_path(dir, 40)), theme::CYAN),
-                None => (" no session selected ".to_string(), theme::BLUE),
+                Some(dir) => (format!(" {} ", shorten_path(dir, 40)), t.cyan),
+                None => (" no session selected ".to_string(), t.border),
             },
         };
 
         let outer_block = Block::default()
             .title(title.as_str())
-            .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+            .title_style(Style::default().fg(t.accent_bright))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_fg))
-            .style(Style::default().bg(theme::BG));
+            .style(Style::default().bg(t.bg));
         let inner = outer_block.inner(area);
         frame.render_widget(outer_block, area);
 
@@ -689,11 +689,11 @@ impl SessionList {
                 Paragraph::new(vec![
                     Line::from(Span::styled(
                         truncate_str(&summary_line, inner.width as usize),
-                        Style::default().fg(theme::CYAN),
+                        Style::default().fg(t.cyan),
                     )),
                     Line::from(Span::styled(
                         "─".repeat(inner.width as usize),
-                        Style::default().fg(theme::BLUE),
+                        Style::default().fg(t.border),
                     )),
                 ]),
                 chunks[0],
@@ -711,37 +711,37 @@ impl SessionList {
             let skip = lines.len().saturating_sub(visible_height);
             let visible: Vec<Line> = lines.into_iter().skip(skip).collect();
             frame.render_widget(
-                Paragraph::new(visible).style(Style::default().fg(theme::TEXT)),
+                Paragraph::new(visible).style(Style::default().fg(t.text)),
                 content_area,
             );
         } else {
-            self.splash.draw(frame, content_area);
+            self.splash.draw(frame, content_area, t);
         }
     }
 }
 
-fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_selected: bool) {
+fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_selected: bool, t: &Theme) {
     let (status_label, state_color) = if session.claude_session_id.is_none() {
-        ("", theme::GRAY_DIM)
+        ("", t.gray_dim)
     } else {
         let (label, color) = match session.state {
-            SessionState::Working => ("working", theme::ORANGE_BRIGHT),
-            SessionState::WaitingUser => ("waiting", theme::CYAN_VIVID),
-            SessionState::Idle => ("idle", theme::GRAY_DIM),
+            SessionState::Working => ("working", t.accent_bright),
+            SessionState::WaitingUser => ("waiting", t.cyan_vivid),
+            SessionState::Idle => ("idle", t.gray_dim),
         };
         (label, color)
     };
 
     let border_fg = if is_selected {
-        theme::ORANGE_BRIGHT
+        t.accent_bright
     } else {
-        theme::BLUE
+        t.border
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_fg))
-        .style(Style::default().bg(theme::BG));
+        .style(Style::default().bg(t.bg));
     let card_inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -763,11 +763,11 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
     let name = truncate_str(&session.tmux_session_name, max_name);
     let name_style = if is_selected {
         Style::default()
-            .fg(theme::ORANGE_BRIGHT)
+            .fg(t.accent_bright)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
-            .fg(theme::SESSION_NAME)
+            .fg(t.session_name)
             .add_modifier(Modifier::BOLD)
     };
     let name_display_w = name.chars().count();
@@ -806,7 +806,7 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             dir_line,
-            Style::default().fg(theme::GRAY_DIM),
+            Style::default().fg(t.gray_dim),
         ))),
         rows[1],
     );
@@ -819,7 +819,7 @@ fn draw_session_card(frame: &mut Frame, area: Rect, session: &SessionRecord, is_
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             cmd_tag,
-            Style::default().fg(theme::GRAY_DIM),
+            Style::default().fg(t.gray_dim),
         ))),
         rows[2],
     );

@@ -12,7 +12,8 @@ use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
     autocomplete::{BranchCompleter, DirCompleter},
-    recent_dirs, theme,
+    recent_dirs,
+    theme::Theme,
 };
 
 fn char_wrap_lines(text: &str, width: usize) -> Vec<String> {
@@ -847,9 +848,9 @@ impl App {
         }
     }
 
-    pub fn draw(&self, frame: &mut Frame) {
+    pub fn draw(&self, frame: &mut Frame, t: &Theme) {
         if self.form_mode == FormMode::NewTmuxSession {
-            self.draw_tmux_session_form(frame);
+            self.draw_tmux_session_form(frame, t);
             return;
         }
 
@@ -915,14 +916,14 @@ impl App {
         // Clear area behind form (including error line) and fill with background
         frame.render_widget(Clear, outer_area);
         frame.render_widget(
-            Block::default().style(Style::default().bg(theme::BG)),
+            Block::default().style(Style::default().bg(t.bg)),
             outer_area,
         );
 
         let outer_block = Block::default()
             .title_top(Line::from(Span::styled(
                 " New Task ",
-                Style::default().fg(theme::ORANGE_BRIGHT),
+                Style::default().fg(t.accent_bright),
             )))
             .title_top(
                 Line::from(Span::styled(
@@ -931,13 +932,13 @@ impl App {
                         GitMode::Branch => " [git: branch] ",
                         GitMode::ExistingWorktree => " [git: existing worktree] ",
                     },
-                    Style::default().fg(theme::CYAN),
+                    Style::default().fg(t.cyan),
                 ))
                 .right_aligned(),
             )
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::ORANGE))
-            .style(Style::default().bg(theme::BG));
+            .border_style(Style::default().fg(t.accent))
+            .style(Style::default().bg(t.bg));
         let inner = outer_block.inner(form_area);
         frame.render_widget(outer_block, form_area);
 
@@ -995,30 +996,30 @@ impl App {
 
         // Directory label
         let dir_label =
-            Paragraph::new("Directory:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
+            Paragraph::new("Directory:").style(Style::default().fg(t.text).bg(t.bg));
         frame.render_widget(dir_label, chunks[dir_label_idx]);
 
         // Directory input
         let dir_border_color = if self.focused_field == InputField::Directory {
-            theme::ORANGE_BRIGHT
+            t.accent_bright
         } else {
-            theme::GRAY
+            t.gray
         };
         let dir_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(dir_border_color))
-            .style(Style::default().bg(theme::BG));
+            .style(Style::default().bg(t.bg));
         let dir_inner = dir_block.inner(chunks[dir_input_idx]);
         let dir_value = self.dir_input.value();
         let dir_line = if let Some(ref suggestion) = self.dir_suggestion {
             Line::from(vec![
-                Span::styled(dir_value.to_string(), Style::default().fg(theme::TEXT)),
-                Span::styled(suggestion.as_str(), Style::default().fg(theme::BLUE)),
+                Span::styled(dir_value.to_string(), Style::default().fg(t.text)),
+                Span::styled(suggestion.as_str(), Style::default().fg(t.border)),
             ])
         } else {
             Line::from(Span::styled(
                 dir_value.to_string(),
-                Style::default().fg(theme::TEXT),
+                Style::default().fg(t.text),
             ))
         };
         let dir_para = Paragraph::new(dir_line).block(dir_block);
@@ -1026,22 +1027,22 @@ impl App {
 
         // Title label
         let title_label =
-            Paragraph::new("Title:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
+            Paragraph::new("Title:").style(Style::default().fg(t.text).bg(t.bg));
         frame.render_widget(title_label, chunks[title_label_idx]);
 
         // Title input
         let title_border_color = if self.focused_field == InputField::Title {
-            theme::ORANGE_BRIGHT
+            t.accent_bright
         } else {
-            theme::GRAY
+            t.gray
         };
         let title_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(title_border_color))
-            .style(Style::default().bg(theme::BG));
+            .style(Style::default().bg(t.bg));
         let title_inner = title_block.inner(chunks[title_input_idx]);
         let title_para = Paragraph::new(self.title_input.value())
-            .style(Style::default().fg(theme::TEXT))
+            .style(Style::default().fg(t.text))
             .block(title_block);
         frame.render_widget(title_para, chunks[title_input_idx]);
 
@@ -1052,31 +1053,31 @@ impl App {
             && let (Some(bl_idx), Some(bi_idx)) = (branch_label_idx, branch_input_idx)
         {
             let branch_label = Paragraph::new("Branch name:")
-                .style(Style::default().fg(theme::TEXT).bg(theme::BG));
+                .style(Style::default().fg(t.text).bg(t.bg));
             frame.render_widget(branch_label, chunks[bl_idx]);
 
             let branch_border_color = if self.focused_field == InputField::BranchName {
-                theme::ORANGE_BRIGHT
+                t.accent_bright
             } else {
-                theme::GRAY
+                t.gray
             };
             let branch_block = Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(branch_border_color))
-                .style(Style::default().bg(theme::BG));
+                .style(Style::default().bg(t.bg));
             let bi = branch_block.inner(chunks[bi_idx]);
             branch_inner = Some(bi);
             branch_chunk = Some(chunks[bi_idx]);
             let branch_value = self.branch_name_input.value();
             let branch_line = if let Some(ref suggestion) = self.branch_suggestion {
                 Line::from(vec![
-                    Span::styled(branch_value.to_string(), Style::default().fg(theme::TEXT)),
-                    Span::styled(suggestion.as_str(), Style::default().fg(theme::BLUE)),
+                    Span::styled(branch_value.to_string(), Style::default().fg(t.text)),
+                    Span::styled(suggestion.as_str(), Style::default().fg(t.border)),
                 ])
             } else {
                 Line::from(Span::styled(
                     branch_value.to_string(),
-                    Style::default().fg(theme::TEXT),
+                    Style::default().fg(t.text),
                 ))
             };
             let branch_para = Paragraph::new(branch_line).block(branch_block);
@@ -1085,24 +1086,24 @@ impl App {
 
         // Prompt label
         let prompt_label = Paragraph::new("Prompt (optional):")
-            .style(Style::default().fg(theme::TEXT).bg(theme::BG));
+            .style(Style::default().fg(t.text).bg(t.bg));
         frame.render_widget(prompt_label, chunks[prompt_label_idx]);
 
         // Prompt input
         let prompt_border_color = if self.focused_field == InputField::Prompt {
-            theme::ORANGE_BRIGHT
+            t.accent_bright
         } else {
-            theme::GRAY
+            t.gray
         };
         let prompt_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(prompt_border_color))
-            .style(Style::default().bg(theme::BG));
+            .style(Style::default().bg(t.bg));
         let prompt_inner = prompt_block.inner(chunks[prompt_input_idx]);
         let wrapped_lines = char_wrap_lines(self.prompt_input.value(), prompt_inner.width as usize);
         let lines: Vec<Line> = wrapped_lines.into_iter().map(Line::from).collect();
         let prompt_para = Paragraph::new(lines)
-            .style(Style::default().fg(theme::TEXT))
+            .style(Style::default().fg(t.text))
             .block(prompt_block);
         frame.render_widget(prompt_para, chunks[prompt_input_idx]);
 
@@ -1111,35 +1112,35 @@ impl App {
             Line::from(vec![
                 Span::styled(
                     "Claude command (default: claude):  ",
-                    Style::default().fg(theme::TEXT).bg(theme::BG),
+                    Style::default().fg(t.text).bg(t.bg),
                 ),
                 Span::styled(
                     format!("[model: {}]", self.model_selection.display_name()),
-                    Style::default().fg(theme::CYAN).bg(theme::BG),
+                    Style::default().fg(t.cyan).bg(t.bg),
                 ),
             ])
         } else {
             Line::from(Span::styled(
                 "Claude command (default: claude):",
-                Style::default().fg(theme::TEXT).bg(theme::BG),
+                Style::default().fg(t.text).bg(t.bg),
             ))
         };
-        let cmd_label = Paragraph::new(cmd_label_text).style(Style::default().bg(theme::BG));
+        let cmd_label = Paragraph::new(cmd_label_text).style(Style::default().bg(t.bg));
         frame.render_widget(cmd_label, chunks[cmd_label_idx]);
 
         // Claude command input
         let cmd_border_color = if self.focused_field == InputField::ClaudeCommand {
-            theme::ORANGE_BRIGHT
+            t.accent_bright
         } else {
-            theme::GRAY
+            t.gray
         };
         let cmd_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(cmd_border_color))
-            .style(Style::default().bg(theme::BG));
+            .style(Style::default().bg(t.bg));
         let cmd_inner = cmd_block.inner(chunks[cmd_input_idx]);
         let cmd_para = Paragraph::new(self.claude_command_input.value())
-            .style(Style::default().fg(theme::TEXT))
+            .style(Style::default().fg(t.text))
             .block(cmd_block);
         frame.render_widget(cmd_para, chunks[cmd_input_idx]);
 
@@ -1147,24 +1148,24 @@ impl App {
         let model_focused = self.focused_field == InputField::ModelSelection;
         let mut spans = vec![Span::styled(
             if model_focused { "< " } else { "  " },
-            Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
+            Style::default().fg(t.gray_dim).bg(t.bg),
         )];
         for (i, &variant) in ModelSelection::ALL.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::styled("  ", Style::default().bg(theme::BG)));
+                spans.push(Span::styled("  ", Style::default().bg(t.bg)));
             }
             let style = if variant == self.model_selection {
-                Style::default().fg(theme::BG).bg(theme::ORANGE_BRIGHT)
+                Style::default().fg(t.bg).bg(t.accent_bright)
             } else {
-                Style::default().fg(theme::GRAY_DIM).bg(theme::BG)
+                Style::default().fg(t.gray_dim).bg(t.bg)
             };
             spans.push(Span::styled(format!(" {} ", variant.display_name()), style));
         }
         spans.push(Span::styled(
             if model_focused { " >" } else { "  " },
-            Style::default().fg(theme::GRAY_DIM).bg(theme::BG),
+            Style::default().fg(t.gray_dim).bg(t.bg),
         ));
-        let selector_para = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::BG));
+        let selector_para = Paragraph::new(Line::from(spans)).style(Style::default().bg(t.bg));
         frame.render_widget(selector_para, chunks[model_selector_idx]);
 
         // Hints
@@ -1198,7 +1199,7 @@ impl App {
         };
         let hints = Paragraph::new(Line::from(Span::styled(
             hint_text,
-            Style::default().fg(theme::GRAY_DIM),
+            Style::default().fg(t.gray_dim),
         )))
         .alignment(Alignment::Center);
         frame.render_widget(hints, chunks[hints_idx]);
@@ -1206,7 +1207,7 @@ impl App {
         if let Some(ref err) = self.error_message {
             let error_para = Paragraph::new(Span::styled(
                 format!(" {err} "),
-                Style::default().fg(Color::White).bg(theme::ERROR),
+                Style::default().fg(Color::White).bg(t.error),
             ))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false });
@@ -1232,9 +1233,9 @@ impl App {
                 .take(visible)
                 .map(|(i, d)| {
                     let style = if Some(i) == self.recent_dirs_dropdown.selected {
-                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
+                        Style::default().fg(t.text).bg(t.gray)
                     } else {
-                        Style::default().fg(theme::GRAY_DIM)
+                        Style::default().fg(t.gray_dim)
                     };
                     ratatui::widgets::ListItem::new(Line::from(Span::styled(*d, style)))
                 })
@@ -1256,10 +1257,10 @@ impl App {
             let dropdown = ratatui::widgets::List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme::ORANGE))
+                    .border_style(Style::default().fg(t.accent))
                     .title(title)
-                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
-                    .style(Style::default().bg(theme::BG)),
+                    .title_style(Style::default().fg(t.accent_bright))
+                    .style(Style::default().bg(t.bg)),
             );
             frame.render_widget(dropdown, dropdown_area);
         }
@@ -1286,9 +1287,9 @@ impl App {
                 .take(visible)
                 .map(|(i, b)| {
                     let style = if Some(i) == self.branch_dropdown.selected {
-                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
+                        Style::default().fg(t.text).bg(t.gray)
                     } else {
-                        Style::default().fg(theme::GRAY_DIM)
+                        Style::default().fg(t.gray_dim)
                     };
                     ratatui::widgets::ListItem::new(Line::from(Span::styled(*b, style)))
                 })
@@ -1310,10 +1311,10 @@ impl App {
             let dropdown = ratatui::widgets::List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme::ORANGE))
+                    .border_style(Style::default().fg(t.accent))
                     .title(title)
-                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
-                    .style(Style::default().bg(theme::BG)),
+                    .title_style(Style::default().fg(t.accent_bright))
+                    .style(Style::default().bg(t.bg)),
             );
             frame.render_widget(dropdown, dropdown_area);
         }
@@ -1337,9 +1338,9 @@ impl App {
                 .take(visible)
                 .map(|(i, w)| {
                     let style = if Some(i) == self.worktree_dropdown.selected {
-                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
+                        Style::default().fg(t.text).bg(t.gray)
                     } else {
-                        Style::default().fg(theme::GRAY_DIM)
+                        Style::default().fg(t.gray_dim)
                     };
                     ratatui::widgets::ListItem::new(Line::from(Span::styled(*w, style)))
                 })
@@ -1361,10 +1362,10 @@ impl App {
             let dropdown = ratatui::widgets::List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme::ORANGE))
+                    .border_style(Style::default().fg(t.accent))
                     .title(title)
-                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
-                    .style(Style::default().bg(theme::BG)),
+                    .title_style(Style::default().fg(t.accent_bright))
+                    .style(Style::default().bg(t.bg)),
             );
             frame.render_widget(dropdown, dropdown_area);
         }
@@ -1401,7 +1402,7 @@ impl App {
         }
     }
 
-    fn draw_tmux_session_form(&self, frame: &mut Frame) {
+    fn draw_tmux_session_form(&self, frame: &mut Frame, t: &Theme) {
         let area = frame.area();
         let form_width = 90u16.min(area.width.saturating_sub(2));
         // 2 (outer border) + 1 (title label) + 3 (title input) + 1 (dir label) + 3 (dir input) + 1 (hints) = 11
@@ -1436,16 +1437,16 @@ impl App {
 
         frame.render_widget(Clear, outer_area);
         frame.render_widget(
-            Block::default().style(Style::default().bg(theme::BG)),
+            Block::default().style(Style::default().bg(t.bg)),
             outer_area,
         );
 
         let outer_block = Block::default()
             .title(" New Tmux Session ")
-            .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
+            .title_style(Style::default().fg(t.accent_bright))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::ORANGE))
-            .style(Style::default().bg(theme::BG));
+            .border_style(Style::default().fg(t.accent))
+            .style(Style::default().bg(t.bg));
         let inner = outer_block.inner(form_area);
         frame.render_widget(outer_block, form_area);
 
@@ -1460,51 +1461,51 @@ impl App {
 
         // Title label
         let title_label =
-            Paragraph::new("Title:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
+            Paragraph::new("Title:").style(Style::default().fg(t.text).bg(t.bg));
         frame.render_widget(title_label, chunks[0]);
 
         // Title input
         let title_border_color = if self.focused_field == InputField::Title {
-            theme::ORANGE_BRIGHT
+            t.accent_bright
         } else {
-            theme::GRAY
+            t.gray
         };
         let title_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(title_border_color))
-            .style(Style::default().bg(theme::BG));
+            .style(Style::default().bg(t.bg));
         let title_inner = title_block.inner(chunks[1]);
         let title_para = Paragraph::new(self.title_input.value())
-            .style(Style::default().fg(theme::TEXT))
+            .style(Style::default().fg(t.text))
             .block(title_block);
         frame.render_widget(title_para, chunks[1]);
 
         // Directory label
         let dir_label =
-            Paragraph::new("Directory:").style(Style::default().fg(theme::TEXT).bg(theme::BG));
+            Paragraph::new("Directory:").style(Style::default().fg(t.text).bg(t.bg));
         frame.render_widget(dir_label, chunks[2]);
 
         // Directory input
         let dir_border_color = if self.focused_field == InputField::Directory {
-            theme::ORANGE_BRIGHT
+            t.accent_bright
         } else {
-            theme::GRAY
+            t.gray
         };
         let dir_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(dir_border_color))
-            .style(Style::default().bg(theme::BG));
+            .style(Style::default().bg(t.bg));
         let dir_inner = dir_block.inner(chunks[3]);
         let dir_value = self.dir_input.value();
         let dir_line = if let Some(ref suggestion) = self.dir_suggestion {
             Line::from(vec![
-                Span::styled(dir_value.to_string(), Style::default().fg(theme::TEXT)),
-                Span::styled(suggestion.as_str(), Style::default().fg(theme::BLUE)),
+                Span::styled(dir_value.to_string(), Style::default().fg(t.text)),
+                Span::styled(suggestion.as_str(), Style::default().fg(t.border)),
             ])
         } else {
             Line::from(Span::styled(
                 dir_value.to_string(),
-                Style::default().fg(theme::TEXT),
+                Style::default().fg(t.text),
             ))
         };
         let dir_para = Paragraph::new(dir_line).block(dir_block);
@@ -1528,7 +1529,7 @@ impl App {
         };
         let hints = Paragraph::new(Line::from(Span::styled(
             hint_text,
-            Style::default().fg(theme::GRAY_DIM),
+            Style::default().fg(t.gray_dim),
         )))
         .alignment(Alignment::Center);
         frame.render_widget(hints, chunks[4]);
@@ -1537,7 +1538,7 @@ impl App {
         if let Some(ref err) = self.error_message {
             let error_para = Paragraph::new(Span::styled(
                 format!(" {err} "),
-                Style::default().fg(Color::White).bg(theme::ERROR),
+                Style::default().fg(Color::White).bg(t.error),
             ))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false });
@@ -1563,9 +1564,9 @@ impl App {
                 .take(visible)
                 .map(|(i, d)| {
                     let style = if Some(i) == self.recent_dirs_dropdown.selected {
-                        Style::default().fg(theme::TEXT).bg(theme::GRAY)
+                        Style::default().fg(t.text).bg(t.gray)
                     } else {
-                        Style::default().fg(theme::GRAY_DIM)
+                        Style::default().fg(t.gray_dim)
                     };
                     ratatui::widgets::ListItem::new(Line::from(Span::styled(*d, style)))
                 })
@@ -1587,10 +1588,10 @@ impl App {
             let dropdown = ratatui::widgets::List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme::ORANGE))
+                    .border_style(Style::default().fg(t.accent))
                     .title(title)
-                    .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
-                    .style(Style::default().bg(theme::BG)),
+                    .title_style(Style::default().fg(t.accent_bright))
+                    .style(Style::default().bg(t.bg)),
             );
             frame.render_widget(dropdown, dropdown_area);
         }
