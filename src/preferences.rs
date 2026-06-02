@@ -55,6 +55,12 @@ fn save_last_model_to(path: &Path, model_id: Option<&str>) -> Result<()> {
     save_prefs_to(path, &prefs)
 }
 
+/// Return the mtime of preferences.json, or None if missing/unreadable.
+pub fn prefs_mtime() -> Option<std::time::SystemTime> {
+    let path = default_prefs_path().ok()?;
+    std::fs::metadata(&path).ok()?.modified().ok()
+}
+
 pub fn themes_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".van-damme").join("themes"))
 }

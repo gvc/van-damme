@@ -103,12 +103,12 @@ fn main() -> Result<()> {
     let mut screen = Screen::SessionList;
     let mut launch_state: Option<LaunchState> = None;
     let mut running = true;
-    #[allow(unused_mut)]
     let mut current_theme = preferences::load_theme();
-    let t = &current_theme;
+    let mut prefs_mtime: Option<std::time::SystemTime> = preferences::prefs_mtime();
 
     while running {
         terminal.draw(|frame| {
+            let t = &current_theme;
             // Fill entire screen with theme background
             frame.render_widget(
                 Block::default().style(Style::default().bg(t.bg)),
@@ -217,6 +217,12 @@ fn main() -> Result<()> {
             }
             Event::Tick => match screen {
                 Screen::SessionList => {
+                    // Hot-reload preferences (including theme) when file changes.
+                    let new_mtime = preferences::prefs_mtime();
+                    if new_mtime != prefs_mtime {
+                        prefs_mtime = new_mtime;
+                        current_theme = preferences::load_theme();
+                    }
                     session_list.refresh_states();
                     session_list.refresh_preview();
                     session_list.tick_splash();
