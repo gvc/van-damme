@@ -103,23 +103,26 @@ fn main() -> Result<()> {
     let mut screen = Screen::SessionList;
     let mut launch_state: Option<LaunchState> = None;
     let mut running = true;
+    let mut current_theme = preferences::load_theme();
+    let mut prefs_mtime: Option<std::time::SystemTime> = preferences::prefs_mtime();
 
     while running {
         terminal.draw(|frame| {
+            let t = &current_theme;
             // Fill entire screen with theme background
             frame.render_widget(
-                Block::default().style(Style::default().bg(theme::BG)),
+                Block::default().style(Style::default().bg(t.bg)),
                 frame.area(),
             );
             // Always draw session list as the base layer
-            session_list.draw(frame);
+            session_list.draw(frame, t);
             // Overlay new task form or launching spinner on top
             match screen {
                 Screen::SessionList => {}
-                Screen::NewTask => app.draw(frame),
+                Screen::NewTask => app.draw(frame, t),
                 Screen::Launching => {
                     if let Some(ref state) = launch_state {
-                        draw_launching(frame, state);
+                        draw_launching(frame, state, t);
                     }
                 }
             }
@@ -214,6 +217,12 @@ fn main() -> Result<()> {
             }
             Event::Tick => match screen {
                 Screen::SessionList => {
+                    // Hot-reload preferences (including theme) when file changes.
+                    let new_mtime = preferences::prefs_mtime();
+                    if new_mtime != prefs_mtime {
+                        prefs_mtime = new_mtime;
+                        current_theme = preferences::load_theme();
+                    }
                     session_list.refresh_states();
                     session_list.refresh_preview();
                     session_list.tick_splash();
@@ -277,7 +286,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn draw_launching(frame: &mut ratatui::Frame, state: &LaunchState) {
+fn draw_launching(frame: &mut ratatui::Frame, state: &LaunchState, t: &theme::Theme) {
     let area = frame.area();
 
     let box_width = 60u16.min(area.width.saturating_sub(4));
@@ -296,10 +305,10 @@ fn draw_launching(frame: &mut ratatui::Frame, state: &LaunchState) {
     frame.render_widget(Clear, centered);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::ORANGE))
+        .border_style(Style::default().fg(t.accent))
         .title(" Launching Session ")
-        .title_style(Style::default().fg(theme::ORANGE_BRIGHT))
-        .style(Style::default().bg(theme::BG));
+        .title_style(Style::default().fg(t.accent_bright))
+        .style(Style::default().bg(t.bg));
 
     let spinner_char = SPINNER[state.tick % SPINNER.len()];
 
@@ -308,8 +317,8 @@ fn draw_launching(frame: &mut ratatui::Frame, state: &LaunchState) {
         .iter()
         .map(|msg| {
             Line::from(vec![
-                Span::styled("  ✓ ", Style::default().fg(theme::GREEN)),
-                Span::styled(msg.clone(), Style::default().fg(theme::TEXT)),
+                Span::styled("  ✓ ", Style::default().fg(t.green)),
+                Span::styled(msg.clone(), Style::default().fg(t.text)),
             ])
         })
         .collect();
@@ -323,14 +332,14 @@ fn draw_launching(frame: &mut ratatui::Frame, state: &LaunchState) {
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {spinner_char} "),
-            Style::default().fg(theme::ORANGE_BRIGHT),
+            Style::default().fg(t.accent_bright),
         ),
-        Span::styled(spinner_text, Style::default().fg(theme::GRAY_DIM)),
+        Span::styled(spinner_text, Style::default().fg(t.gray_dim)),
     ]));
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .style(Style::default().bg(theme::BG));
+        .style(Style::default().bg(t.bg));
     frame.render_widget(paragraph, centered);
 }
 

@@ -4,7 +4,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
-use crate::theme;
+use crate::theme::Theme;
 
 // ── cyberpunk palette ────────────────────────────────────────────────────────
 
@@ -713,7 +713,7 @@ impl SplashState {
         }
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, t: &Theme) {
         if area.width < 4 || area.height < 3 {
             return;
         }
@@ -1064,9 +1064,9 @@ impl SplashState {
                     continue;
                 }
                 let idx = p.row as usize * w + p.col as usize;
-                let t = p.ttl as f32 / 8.0;
-                grid[idx].ch = if t > 0.5 { '░' } else { '·' };
-                grid[idx].fg = Self::lerp_color(theme::BG, COL_STEAM, t);
+                let frac = p.ttl as f32 / 8.0;
+                grid[idx].ch = if frac > 0.5 { '░' } else { '·' };
+                grid[idx].fg = Self::lerp_color(t.bg, COL_STEAM, frac);
             }
         }
 
@@ -1082,13 +1082,13 @@ impl SplashState {
                 if let Some(bc) = buf.cell_mut(pos) {
                     bc.set_char(cell.ch);
                     bc.set_fg(cell.fg);
-                    bc.set_bg(theme::BG);
+                    bc.set_bg(t.bg);
                 }
             }
         }
 
         // title overlay on top
-        self.render_title_overlay(frame, area);
+        self.render_title_overlay(frame, area, t);
     }
 
     fn base_cell(&self, col: u16, row: u16) -> GridCell {
@@ -1144,7 +1144,7 @@ impl SplashState {
         }
     }
 
-    fn render_title_overlay(&self, frame: &mut Frame, area: Rect) {
+    fn render_title_overlay(&self, frame: &mut Frame, area: Rect, t: &Theme) {
         const VAN_ART: &[&str] = &[
             " ██╗   ██╗ █████╗ ███╗   ██╗",
             " ██║   ██║██╔══██╗████╗  ██║",
@@ -1174,7 +1174,7 @@ impl SplashState {
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     *line,
-                    Style::default().fg(theme::ORANGE_BRIGHT),
+                    Style::default().fg(t.accent_bright),
                 ))
                 .alignment(Alignment::Center),
                 Rect::new(area.x, y, area.width, 1),
@@ -1189,7 +1189,7 @@ impl SplashState {
                 break;
             }
             frame.render_widget(
-                Paragraph::new(Span::styled(*line, Style::default().fg(theme::ORANGE)))
+                Paragraph::new(Span::styled(*line, Style::default().fg(t.accent)))
                     .alignment(Alignment::Center),
                 Rect::new(area.x, y, area.width, 1),
             );
@@ -1200,7 +1200,7 @@ impl SplashState {
 
         if y < area.y + area.height {
             frame.render_widget(
-                Paragraph::new(Span::styled(TAGLINE, Style::default().fg(theme::GRAY_DIM)))
+                Paragraph::new(Span::styled(TAGLINE, Style::default().fg(t.gray_dim)))
                     .alignment(Alignment::Center),
                 Rect::new(area.x, y, area.width, 1),
             );
@@ -1383,7 +1383,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                s.draw(frame, area);
+                s.draw(frame, area, &crate::theme::SYNDICATE);
             })
             .unwrap();
     }
@@ -1396,7 +1396,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                s.draw(frame, area);
+                s.draw(frame, area, &crate::theme::SYNDICATE);
             })
             .unwrap();
     }
@@ -1416,7 +1416,7 @@ mod tests {
         let mut s = SplashState::new();
         terminal
             .draw(|frame| {
-                s.draw(frame, frame.area());
+                s.draw(frame, frame.area(), &crate::theme::SYNDICATE);
             })
             .unwrap();
         assert_eq!(s.width, 40);
@@ -1426,7 +1426,7 @@ mod tests {
         let mut terminal2 = Terminal::new(backend2).unwrap();
         terminal2
             .draw(|frame| {
-                s.draw(frame, frame.area());
+                s.draw(frame, frame.area(), &crate::theme::SYNDICATE);
             })
             .unwrap();
         assert_eq!(s.width, 60);
