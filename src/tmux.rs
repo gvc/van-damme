@@ -499,11 +499,11 @@ mod tests {
             "uuid-123",
             false,
             "claude",
-            Some("claude-sonnet-4-6"),
+            Some("sonnet"),
             None,
             None,
         );
-        assert!(cmd.contains("--model claude-sonnet-4-6"), "cmd: {cmd}");
+        assert!(cmd.contains("--model sonnet"), "cmd: {cmd}");
     }
 
     #[test]
@@ -519,7 +519,7 @@ mod tests {
             "uuid-123",
             false,
             "claude",
-            Some("claude-opus-4-6"),
+            Some("opus"),
             Some("--extra-arg"),
             None,
         );
@@ -538,15 +538,12 @@ mod tests {
             "uuid-123",
             true,
             "claude",
-            Some("claude-haiku-4-5-20251001"),
+            Some("haiku"),
             None,
             None,
         );
         assert!(cmd.contains("--worktree my-session"), "cmd: {cmd}");
-        assert!(
-            cmd.contains("--model claude-haiku-4-5-20251001"),
-            "cmd: {cmd}"
-        );
+        assert!(cmd.contains("--model haiku"), "cmd: {cmd}");
     }
 
     #[test]

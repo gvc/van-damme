@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn test_load_theme_no_theme_field_returns_syndicate() {
         let (_tmp, path) = temp_path();
-        save_last_model_to(&path, Some("claude-sonnet-4-6")).unwrap();
+        save_last_model_to(&path, Some("sonnet")).unwrap();
         let t = load_theme_from(&path);
         assert_eq!(t.bg, theme::SYNDICATE.bg);
     }
@@ -150,15 +150,15 @@ mod tests {
     #[test]
     fn test_save_and_load_model_id() {
         let (_tmp, path) = temp_path();
-        save_last_model_to(&path, Some("claude-sonnet-4-6")).unwrap();
+        save_last_model_to(&path, Some("sonnet")).unwrap();
         let prefs = load_prefs_from(&path).unwrap();
-        assert_eq!(prefs.last_model, Some("claude-sonnet-4-6".to_string()));
+        assert_eq!(prefs.last_model, Some("sonnet".to_string()));
     }
 
     #[test]
     fn test_save_none_clears_model() {
         let (_tmp, path) = temp_path();
-        save_last_model_to(&path, Some("claude-opus-4-6")).unwrap();
+        save_last_model_to(&path, Some("opus")).unwrap();
         save_last_model_to(&path, None).unwrap();
         let prefs = load_prefs_from(&path).unwrap();
         assert!(prefs.last_model.is_none());
@@ -167,20 +167,20 @@ mod tests {
     #[test]
     fn test_roundtrip_preserves_value() {
         let (_tmp, path) = temp_path();
-        save_last_model_to(&path, Some("claude-haiku-4-5-20251001")).unwrap();
+        save_last_model_to(&path, Some("haiku")).unwrap();
         let prefs = load_prefs_from(&path).unwrap();
         assert_eq!(
             prefs.last_model,
-            Some("claude-haiku-4-5-20251001".to_string())
+            Some("haiku".to_string())
         );
     }
 
     #[test]
     fn test_save_overwrites_previous() {
         let (_tmp, path) = temp_path();
-        save_last_model_to(&path, Some("claude-opus-4-6")).unwrap();
-        save_last_model_to(&path, Some("claude-sonnet-4-6")).unwrap();
+        save_last_model_to(&path, Some("opus")).unwrap();
+        save_last_model_to(&path, Some("sonnet")).unwrap();
         let prefs = load_prefs_from(&path).unwrap();
-        assert_eq!(prefs.last_model, Some("claude-sonnet-4-6".to_string()));
+        assert_eq!(prefs.last_model, Some("sonnet".to_string()));
     }
 }

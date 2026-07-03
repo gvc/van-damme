@@ -145,35 +145,39 @@ pub enum GitMode {
 pub enum ModelSelection {
     #[default]
     Default,
-    Opus46,
-    Sonnet46,
-    Haiku45,
+    Fable,
+    Opus,
+    Sonnet,
+    Haiku,
 }
 
 impl ModelSelection {
     pub const ALL: &'static [ModelSelection] = &[
         ModelSelection::Default,
-        ModelSelection::Opus46,
-        ModelSelection::Sonnet46,
-        ModelSelection::Haiku45,
+        ModelSelection::Fable,
+        ModelSelection::Opus,
+        ModelSelection::Sonnet,
+        ModelSelection::Haiku,
     ];
 
     pub fn display_name(self) -> &'static str {
         match self {
             ModelSelection::Default => "default",
-            ModelSelection::Opus46 => "opus-4-6",
-            ModelSelection::Sonnet46 => "sonnet-4-6",
-            ModelSelection::Haiku45 => "haiku-4-5",
+            ModelSelection::Fable => "fable",
+            ModelSelection::Opus => "opus",
+            ModelSelection::Sonnet => "sonnet",
+            ModelSelection::Haiku => "haiku",
         }
     }
 
-    /// Full model ID passed as `--model <id>`. Returns None for Default (no flag emitted).
+    /// Model name passed as `--model <name>`. Returns None for Default (no flag emitted).
     pub fn model_id(self) -> Option<&'static str> {
         match self {
             ModelSelection::Default => None,
-            ModelSelection::Opus46 => Some("claude-opus-4-6"),
-            ModelSelection::Sonnet46 => Some("claude-sonnet-4-6"),
-            ModelSelection::Haiku45 => Some("claude-haiku-4-5-20251001"),
+            ModelSelection::Fable => Some("fable"),
+            ModelSelection::Opus => Some("opus"),
+            ModelSelection::Sonnet => Some("sonnet"),
+            ModelSelection::Haiku => Some("haiku"),
         }
     }
 
@@ -2538,34 +2542,32 @@ mod tests {
     #[test]
     fn test_model_selection_display_names() {
         assert_eq!(ModelSelection::Default.display_name(), "default");
-        assert_eq!(ModelSelection::Opus46.display_name(), "opus-4-6");
-        assert_eq!(ModelSelection::Sonnet46.display_name(), "sonnet-4-6");
-        assert_eq!(ModelSelection::Haiku45.display_name(), "haiku-4-5");
+        assert_eq!(ModelSelection::Fable.display_name(), "fable");
+        assert_eq!(ModelSelection::Opus.display_name(), "opus");
+        assert_eq!(ModelSelection::Sonnet.display_name(), "sonnet");
+        assert_eq!(ModelSelection::Haiku.display_name(), "haiku");
     }
 
     #[test]
     fn test_model_selection_model_ids() {
         assert_eq!(ModelSelection::Default.model_id(), None);
-        assert_eq!(ModelSelection::Opus46.model_id(), Some("claude-opus-4-6"));
-        assert_eq!(
-            ModelSelection::Sonnet46.model_id(),
-            Some("claude-sonnet-4-6")
-        );
-        assert_eq!(
-            ModelSelection::Haiku45.model_id(),
-            Some("claude-haiku-4-5-20251001")
-        );
+        assert_eq!(ModelSelection::Fable.model_id(), Some("fable"));
+        assert_eq!(ModelSelection::Opus.model_id(), Some("opus"));
+        assert_eq!(ModelSelection::Sonnet.model_id(), Some("sonnet"));
+        assert_eq!(ModelSelection::Haiku.model_id(), Some("haiku"));
     }
 
     #[test]
     fn test_model_selection_next_wraps() {
         let mut m = ModelSelection::Default;
         m = m.next();
-        assert_eq!(m, ModelSelection::Opus46);
+        assert_eq!(m, ModelSelection::Fable);
         m = m.next();
-        assert_eq!(m, ModelSelection::Sonnet46);
+        assert_eq!(m, ModelSelection::Opus);
         m = m.next();
-        assert_eq!(m, ModelSelection::Haiku45);
+        assert_eq!(m, ModelSelection::Sonnet);
+        m = m.next();
+        assert_eq!(m, ModelSelection::Haiku);
         m = m.next();
         assert_eq!(m, ModelSelection::Default); // wraps
     }
@@ -2574,29 +2576,26 @@ mod tests {
     fn test_model_selection_prev_wraps() {
         let mut m = ModelSelection::Default;
         m = m.prev();
-        assert_eq!(m, ModelSelection::Haiku45); // wraps
+        assert_eq!(m, ModelSelection::Haiku); // wraps
         m = m.prev();
-        assert_eq!(m, ModelSelection::Sonnet46);
+        assert_eq!(m, ModelSelection::Sonnet);
         m = m.prev();
-        assert_eq!(m, ModelSelection::Opus46);
+        assert_eq!(m, ModelSelection::Opus);
+        m = m.prev();
+        assert_eq!(m, ModelSelection::Fable);
         m = m.prev();
         assert_eq!(m, ModelSelection::Default);
     }
 
     #[test]
     fn test_model_selection_from_model_id_known() {
+        assert_eq!(ModelSelection::from_model_id("fable"), ModelSelection::Fable);
+        assert_eq!(ModelSelection::from_model_id("opus"), ModelSelection::Opus);
         assert_eq!(
-            ModelSelection::from_model_id("claude-opus-4-6"),
-            ModelSelection::Opus46
+            ModelSelection::from_model_id("sonnet"),
+            ModelSelection::Sonnet
         );
-        assert_eq!(
-            ModelSelection::from_model_id("claude-sonnet-4-6"),
-            ModelSelection::Sonnet46
-        );
-        assert_eq!(
-            ModelSelection::from_model_id("claude-haiku-4-5-20251001"),
-            ModelSelection::Haiku45
-        );
+        assert_eq!(ModelSelection::from_model_id("haiku"), ModelSelection::Haiku);
     }
 
     #[test]
@@ -2609,12 +2608,9 @@ mod tests {
 
     #[test]
     fn test_model_selection_with_last_model_sets_correct_variant() {
-        let app = App::with_recent_dirs_mode_and_model(
-            Vec::new(),
-            FormMode::NewTask,
-            Some("claude-sonnet-4-6"),
-        );
-        assert_eq!(app.model_selection, ModelSelection::Sonnet46);
+        let app =
+            App::with_recent_dirs_mode_and_model(Vec::new(), FormMode::NewTask, Some("sonnet"));
+        assert_eq!(app.model_selection, ModelSelection::Sonnet);
     }
 
     #[test]
@@ -2628,9 +2624,9 @@ mod tests {
         let mut app = App::new();
         app.focused_field = InputField::ModelSelection;
         app.handle_key(key(KeyCode::Right));
-        assert_eq!(app.model_selection, ModelSelection::Opus46);
+        assert_eq!(app.model_selection, ModelSelection::Fable);
         app.handle_key(key(KeyCode::Right));
-        assert_eq!(app.model_selection, ModelSelection::Sonnet46);
+        assert_eq!(app.model_selection, ModelSelection::Opus);
     }
 
     #[test]
@@ -2638,13 +2634,13 @@ mod tests {
         let mut app = App::new();
         app.focused_field = InputField::ModelSelection;
         app.handle_key(key(KeyCode::Left));
-        assert_eq!(app.model_selection, ModelSelection::Haiku45);
+        assert_eq!(app.model_selection, ModelSelection::Haiku);
     }
 
     #[test]
     fn test_submit_carries_model_selection() {
         let mut app = App::new();
-        app.model_selection = ModelSelection::Sonnet46;
+        app.model_selection = ModelSelection::Sonnet;
         app.handle_key(key(KeyCode::Tab)); // -> Title
         for ch in "my task".chars() {
             app.handle_key(key(KeyCode::Char(ch)));
@@ -2654,7 +2650,7 @@ mod tests {
             Action::Submit {
                 model_selection, ..
             } => {
-                assert_eq!(model_selection, ModelSelection::Sonnet46);
+                assert_eq!(model_selection, ModelSelection::Sonnet);
             }
             _ => panic!("Expected Submit action"),
         }

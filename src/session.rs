@@ -415,14 +415,11 @@ mod tests {
         {
             let mut db = SessionDb::open(&path).unwrap();
             let mut r = make_record("model-session", Some("uuid-123"));
-            r.model_id = Some("claude-sonnet-4-6".to_string());
+            r.model_id = Some("sonnet".to_string());
             db.sessions.push(r);
             db.save().unwrap();
         }
         let db = SessionDb::open(&path).unwrap();
-        assert_eq!(
-            db.sessions[0].model_id,
-            Some("claude-sonnet-4-6".to_string())
-        );
+        assert_eq!(db.sessions[0].model_id, Some("sonnet".to_string()));
     }
 }

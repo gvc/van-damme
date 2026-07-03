@@ -1114,14 +1114,14 @@ mod tests {
             created_at: 1000,
             state: SessionState::Idle,
             claude_command: "claude".to_string(),
-            model_id: Some("claude-sonnet-4-6".to_string()),
+            model_id: Some("sonnet".to_string()),
             branch_name: None,
         };
         let tag = match &session.model_id {
             Some(m) => format!("[{} | {}]", session.claude_command, m),
             None => format!("[{}]", session.claude_command),
         };
-        assert_eq!(tag, "[claude | claude-sonnet-4-6]");
+        assert_eq!(tag, "[claude | sonnet]");
     }
 
     #[test]
