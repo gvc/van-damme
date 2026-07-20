@@ -90,6 +90,9 @@ pub struct SessionList {
     search_active: bool,
     search_query: String,
     pub status_message: Option<String>,
+    /// When the current `status_message` was set. `None` = never auto-expire
+    /// (e.g. a kill-confirm prompt that waits for a keypress).
+    status_set_at: Option<std::time::Instant>,
     confirm_kill: Option<KillTarget>,
     card_scroll_offset: usize,
     preview_content: Option<String>,
@@ -107,6 +110,7 @@ impl SessionList {
             search_active: false,
             search_query: String::new(),
             status_message: None,
+            status_set_at: None,
             confirm_kill: None,
             card_scroll_offset: 0,
             preview_content: None,
@@ -119,6 +123,26 @@ impl SessionList {
 
     pub fn tick_splash(&mut self) {
         self.splash.tick();
+    }
+
+    /// How long a transient status message stays on screen before auto-clearing.
+    const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Set a transient status message. Auto-expires after `STATUS_TTL`.
+    fn set_status(&mut self, msg: String) {
+        self.status_message = Some(msg);
+        self.status_set_at = Some(std::time::Instant::now());
+    }
+
+    /// Clear the status message once its TTL has elapsed. Messages with no
+    /// timestamp (kill-confirm prompt) never expire here; they clear on keypress.
+    pub fn expire_status(&mut self) {
+        if let Some(set_at) = self.status_set_at
+            && set_at.elapsed() >= Self::STATUS_TTL
+        {
+            self.status_message = None;
+            self.status_set_at = None;
+        }
     }
 
     #[allow(dead_code)]
@@ -140,7 +164,7 @@ impl SessionList {
                 self.apply_filter();
             }
             Err(e) => {
-                self.status_message = Some(format!("Error loading sessions: {e}"));
+                self.set_status(format!("Error loading sessions: {e}"));
             }
         }
     }
@@ -170,6 +194,7 @@ impl SessionList {
         self.search_active = true;
         self.search_query.clear();
         self.status_message = None;
+        self.status_set_at = None;
     }
 
     fn exit_search(&mut self) {
@@ -218,7 +243,7 @@ impl SessionList {
                     self.kill_session(&target.name, true);
                 }
                 _ => {
-                    self.status_message = Some("Kill cancelled.".to_string());
+                    self.set_status("Kill cancelled.".to_string());
                 }
             }
             return SessionListAction::None;
@@ -334,6 +359,8 @@ impl SessionList {
             } else {
                 format!("Kill '{name}'? Press x/y to confirm, any other key to cancel.")
             });
+            // Confirm prompt waits for a keypress — never auto-expire.
+            self.status_set_at = None;
             self.confirm_kill = Some(KillTarget {
                 name,
                 worktree_path,
@@ -353,7 +380,7 @@ impl SessionList {
                 db.sessions.retain(|s| s.tmux_session_name != name);
                 let _ = db.save();
                 self.spawn_worktree_delete(name.to_string(), worktree_path.clone());
-                self.status_message = Some(format!(
+                self.set_status(format!(
                     "Killed '{name}'. Deleting worktree in background: {worktree_path}"
                 ));
                 self.refresh();
@@ -362,7 +389,7 @@ impl SessionList {
             db.sessions.retain(|s| s.tmux_session_name != name);
             let _ = db.save();
         }
-        self.status_message = Some(format!("Deleted session: {name}"));
+        self.set_status(format!("Deleted session: {name}"));
         self.refresh();
     }
 
@@ -406,7 +433,7 @@ impl SessionList {
                 Err(mpsc::TryRecvError::Empty) => true,
             });
         for (name, path, result) in completed {
-            self.status_message = Some(match result {
+            self.set_status(match result {
                 Ok(()) => format!("Deleted worktree for '{name}': {path}"),
                 Err(e) => format!("Failed to remove worktree at '{path}': {e}"),
             });
@@ -1010,6 +1037,39 @@ mod tests {
                 worktree_path: None
             })
         );
+        assert!(list.status_message.as_ref().unwrap().contains("confirm"));
+    }
+
+    #[test]
+    fn test_status_message_expires_after_ttl() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.set_status("hello".to_string());
+        assert!(list.status_message.is_some());
+        // Backdate past the TTL, then expire.
+        list.status_set_at = Some(std::time::Instant::now() - SessionList::STATUS_TTL);
+        list.expire_status();
+        assert!(list.status_message.is_none());
+        assert!(list.status_set_at.is_none());
+    }
+
+    #[test]
+    fn test_status_message_survives_before_ttl() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        list.set_status("hello".to_string());
+        list.expire_status();
+        assert_eq!(list.status_message.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_confirm_prompt_never_expires() {
+        let mut list = SessionList::new(sample_grouped_sessions());
+        // Pre-existing transient message would have a timestamp.
+        list.set_status("old".to_string());
+        list.handle_key(key(KeyCode::Char('x')));
+        assert!(list.confirm_kill.is_some());
+        assert!(list.status_set_at.is_none());
+        // Even long after, prompt stays until a keypress.
+        list.expire_status();
         assert!(list.status_message.as_ref().unwrap().contains("confirm"));
     }
 
