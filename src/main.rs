@@ -227,6 +227,7 @@ fn main() -> Result<()> {
                     session_list.refresh_preview();
                     session_list.tick_splash();
                     session_list.poll_worktree_deletes();
+                    session_list.expire_status();
                 }
                 Screen::Launching => {
                     if let Some(ref mut state) = launch_state {
